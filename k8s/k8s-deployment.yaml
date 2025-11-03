@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medical-cv-serve
+  namespace: ml
+  labels:
+    app: medical-cv-serve
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: medical-cv-serve
+  template:
+    metadata:
+      labels:
+        app: medical-cv-serve
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: api
+          image: ghcr.io/YOUR_GH_USERNAME/medical-cv-serve:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: BUILD_REV
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10

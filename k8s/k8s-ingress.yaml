@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: medical-cv-serve
+  namespace: ml
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+    - host: CHANGE_ME.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: medical-cv-serve
+                port:
+                  number: 80
