@@ -21,13 +21,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute lowercase repo
+        id: vars
+        run: |
+          echo "REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ toLower(github.repository) }}:latest
-            ghcr.io/${{ toLower(github.repository) }}:${{ github.sha }}
+            ghcr.io/${{ steps.vars.outputs.REPO }}:latest
+            ghcr.io/${{ steps.vars.outputs.REPO }}:${{ github.sha }}
           build-args: |
             BUILD_REV=${{ github.sha }}
