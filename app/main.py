@@ -20,7 +20,7 @@ MODEL = load_model(MODEL_PATH)
 MODEL_SHA = model_short_sha(MODEL_PATH)
 BUILD_REV = os.getenv("BUILD_REV", "local")
 
-@app.get("/healthz")
+@app.get("/healthz")  # Health check endpoint for monitoring
 async def healthz():
     return {
         "status": "ok",
@@ -29,7 +29,7 @@ async def healthz():
         "build_rev": BUILD_REV,
     }
 
-@app.post("/predict")
+@app.post("/predict")   # receives JSON, loads your scikit-learn model from models/model.joblib, returns predictions
 async def predict(req: PredictRequest):
     try:
         X = [[it.f1, it.f2, it.f3, it.f4] for it in req.items]

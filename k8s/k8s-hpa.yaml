@@ -1,3 +1,4 @@
+# HPA (HorizontalPodAutoscaler) — autoscaling rules (scale up if CPU > 60%).
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
