@@ -27,6 +27,7 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/medical-cv-serve:latest
+            ghcr.io/${{ toLower(github.repository) }}:latest
+            ghcr.io/${{ toLower(github.repository) }}:${{ github.sha }}
           build-args: |
             BUILD_REV=${{ github.sha }}
