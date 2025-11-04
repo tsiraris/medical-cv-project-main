@@ -18,32 +18,15 @@ spec:
       imagePullSecrets:
         - name: ghcr-secret
       containers:
-        - name: api
-          image: ghcr.io/yevgeny07/medical-cv-serve:latest
-          imagePullPolicy: IfNotPresent
+        - name: medical-cv-serve
+          image: ghcr.io/yevgeny07/medical-cv-project:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
-          env:
-            - name: BUILD_REV
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.annotations['kubectl.kubernetes.io/last-applied-configuration']
           resources:
-            requests:
-              cpu: 200m
-              memory: 256Mi
             limits:
-              cpu: 1
-              memory: 512Mi
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: 8000
-            initialDelaySeconds: 5
-            periodSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8000
-            initialDelaySeconds: 10
-            periodSeconds: 10
+              cpu: "500m"
+              memory: "512Mi"
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
