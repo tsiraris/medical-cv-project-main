@@ -6,11 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUILD_REV=dev
 
 WORKDIR /app
-COPY pyproject.toml /app/
-RUN pip install --upgrade pip && \    pip install -e .
 
-# Copy source and model
+# Copy metadata + source before install (editable install needs sources)
+COPY pyproject.toml /app/
 COPY app /app/app
+
+# Install deps using python -m pip (more robust than plain 'pip')
+RUN python -m pip install --upgrade pip && \
+    python -m pip install -e .
+
+# Copy the model folder (created in CI by scripts/train_model.py)
 COPY models /app/models
 
 EXPOSE 8000
