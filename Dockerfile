@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Copy metadata + source before install (editable install needs sources)
+# Copy metadata (dependencies) + source before install (editable install needs sources)
 COPY pyproject.toml /app/
 COPY app /app/app
 
