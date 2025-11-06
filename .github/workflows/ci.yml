@@ -1,13 +1,21 @@
-name: ci
+name: train-and-check
 
 on:
-  pull_request:
   push:
+    branches: [ main ]
+  pull_request:
     branches: [ main ]
 
 jobs:
-  train-and-check:
+  ci:
     runs-on: ubuntu-latest
+    env:
+      # --- CI-safe MLflow (no server needed) ---
+      # 'file:./mlruns' writes runs to the workspace; registry is not used in CI.
+      MLFLOW_TRACKING_URI: "file:./mlruns"
+      MLFLOW_EXPERIMENT_NAME: "ci-demo"
+      # Kept for local parity; ignored by MLflow when using the file backend.
+      MLFLOW_REGISTERED_MODEL_NAME: "cxr-demo"
 
     steps:
       - name: Checkout
@@ -16,31 +24,30 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-            python-version: "3.11"
+          python-version: "3.11"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
-          pip install dvc[all] mlflow scikit-learn matplotlib pyyaml numpy pandas joblib
-
-      # Use a local file-based MLflow store in CI (no registry)
-      - name: Configure env (CI-safe MLflow)
-        run: |
-          echo "MLFLOW_TRACKING_URI=file:./mlruns" >> $GITHUB_ENV
-          echo "MLFLOW_EXPERIMENT_NAME=ci-demo" >> $GITHUB_ENV
-          echo "MLFLOW_REGISTERED_MODEL_NAME=" >> $GITHUB_ENV
+          # Core libs your pipeline uses
+          pip install "mlflow>=2.16,<3" "dvc[s3]>=3,<4" scikit-learn numpy pandas matplotlib boto3 pyyaml joblib
+          # Install your package if you have pyproject.toml / setup.cfg
+          if [ -f "pyproject.toml" ] || [ -f "setup.cfg" ]; then pip install -e .; fi
 
       - name: Reproduce pipeline (DVC)
         run: dvc repro
 
       - name: Quality gate
-        run: python ci/quality_gate.py --metrics metrics/val.json --min-acc 0.80 --min-f1 0.80
+        run: python ci/quality_gate.py
 
-      - name: Upload metrics & plots
+      # Optional: upload artifacts (plots/metrics) for convenience
+      - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: metrics-and-plots
+          name: ci-artifacts
           path: |
-            metrics/val.json
-            artifacts/*.png
+            artifacts/**
+            metrics/**
+            mlruns/**
+          if-no-files-found: ignore
