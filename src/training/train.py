@@ -7,8 +7,10 @@ import yaml
 import joblib
 from pathlib import Path
 import numpy as np
+
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
+
 import mlflow
 import mlflow.sklearn
 from mlflow.models.signature import infer_signature
@@ -25,16 +27,18 @@ parser.add_argument("--out", default="models/model.joblib")
 
 
 def _is_http_uri(uri: str) -> bool:
+    """Returns True if the MLflow tracking URI is an HTTP(s) endpoint (i.e., server-backed)."""
     return uri.startswith("http://") or uri.startswith("https://")
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
 
+    # --- Load pipeline config (hyperparameters, etc.) ---
     with open(args.params, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
-    # Load processed data (written by the preprocess stage)
+    # --- Load processed data produced by the 'preprocess' stage ---
     Xtr = np.load("data/processed/Xtr.npy")
     Xte = np.load("data/processed/Xte.npy")
     ytr = np.load("data/processed/ytr.npy")
@@ -47,32 +51,48 @@ if __name__ == "__main__":
     mlflow.set_tracking_uri(tracking_uri)
     wait_for_mlflow(tracking_uri)  # no-op for file backend, waits only for http(s)
 
+    # Use env experiment if provided; otherwise default
     mlflow.set_experiment(os.getenv("MLFLOW_EXPERIMENT_NAME", "demo-cv"))
 
+    # --- Train + Log ---
     params = cfg.get("model", {})
-    with mlflow.start_run() as run:  # Start an MLflow run
-        clf = LogisticRegression(max_iter=params.get("max_iter", 1000), random_state=cfg.get("seed", 42))
-        clf.fit(Xtr, ytr)
-        y_pred = clf.predict(Xte)
+    seed = cfg.get("seed", 42)
 
+    with mlflow.start_run() as run:
+        # Train a simple classifier
+        clf = LogisticRegression(
+            max_iter=params.get("max_iter", 1000),
+            random_state=seed
+        )
+        clf.fit(Xtr, ytr)
+
+        # Predictions + metrics
+        y_pred = clf.predict(Xte)
         acc = accuracy_score(yte, y_pred)
         f1 = f1_score(yte, y_pred)
 
-        # log params/metrics
+        # Log params/metrics
         mlflow.log_params({
             "arch": cfg["model"].get("arch", "logistic"),
             "max_iter": params.get("max_iter", 1000),
-            "seed": cfg.get("seed", 42),
+            "seed": seed,
         })
         mlflow.log_metric("acc", float(acc))
         mlflow.log_metric("f1", float(f1))
 
-        # optional but nice (removes MLflow warning)
+        # --- Persist the model to the repo for DVC (matches dvc.yaml: outs: models/model.joblib) ---
+        outp = Path(args.out)  # e.g., models/model.joblib
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(clf, outp)
+        print(f"[train] Saved model to: {outp.resolve()}")
+
+        # --- Log model artifact to MLflow ---
+        # Add signature + input_example to silence MLflow warning and improve lineage.
         signature = infer_signature(Xtr, clf.predict(Xtr))
         input_example = Xtr[:2]
 
-        # when logging the model:
         if _is_http_uri(tracking_uri):
+            # On server-backed tracking, we can also register a model version
             reg_name = os.getenv("MLFLOW_REGISTERED_MODEL_NAME", "cxr-demo")
             mlflow.sklearn.log_model(
                 sk_model=clf,
@@ -82,6 +102,7 @@ if __name__ == "__main__":
                 input_example=input_example,
             )
         else:
+            # On file backend (CI), registry APIs aren’t available; just log the model
             mlflow.sklearn.log_model(
                 sk_model=clf,
                 artifact_path="model",
@@ -89,8 +110,8 @@ if __name__ == "__main__":
                 input_example=input_example,
             )
 
-        # write metrics file for DVC / gate
+        # --- Emit metrics file for DVC & CI gate ---
         ensure_dir("metrics")
         save_json({"acc": float(acc), "f1": float(f1)}, "metrics/val.json")
 
-        print({"acc": acc, "run_id": run.info.run_id})
+        print({"acc": acc, "f1": f1, "run_id": run.info.run_id})
