@@ -8,7 +8,7 @@ import joblib
 from pathlib import Path
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, f1_score
 import mlflow
 import mlflow.sklearn
 
@@ -52,7 +52,10 @@ if __name__ == "__main__":
     with mlflow.start_run() as run:  # Start an MLflow run
         clf = LogisticRegression(max_iter=params.get("max_iter", 1000), random_state=cfg.get("seed", 42))
         clf.fit(Xtr, ytr)
-        acc = accuracy_score(yte, clf.predict(Xte))
+        y_pred = clf.predict(Xte)
+
+        acc = accuracy_score(yte, y_pred)
+        f1 = f1_score(yte, y_pred)
 
         # log params/metrics
         mlflow.log_params({
@@ -61,6 +64,7 @@ if __name__ == "__main__":
             "seed": cfg.get("seed", 42),
         })
         mlflow.log_metric("acc", float(acc))
+        mlflow.log_metric("f1", float(f1))
 
         # Save model to repo (models/model.joblib) for pipeline continuity
         outp = Path(args.out)
@@ -78,6 +82,6 @@ if __name__ == "__main__":
 
         # Emit a simple val metrics json for DVC (tracked metric to diff across runs)
         ensure_dir("metrics")
-        save_json({"acc": float(acc)}, "metrics/val.json")
+        save_json({"acc": float(acc), "f1": float(f1)}, "metrics/val.json")
 
         print({"acc": acc, "run_id": run.info.run_id})
