@@ -3,3 +3,15 @@ data/
 artifacts/ 
 models/ 
 metrics/ 
+__pycache__/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.env
+.env.*
+mlruns/
+.minio/
+medical_cv_serve.egg-info/
+!metrics/val.json
+!.env.example
