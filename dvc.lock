@@ -5,11 +5,63 @@ stages:
     deps:
     - path: src/data/preprocess.py
       hash: md5
-      md5: 8df24ae269409cb54220973543b4be19
-      size: 1009
+      md5: ec18c69cf1dd575678d0811e3906b126
+      size: 1639
     outs:
     - path: data/processed
       hash: md5
-      md5: f809ccdaebbab7383b278b6d94238a28.dir
-      size: 5912
+      md5: 5ab80c5e442581d5ffca499d6875a561.dir
+      size: 2512
       nfiles: 4
+  train:
+    cmd: python -m src.training.train --params params.yaml --out 
+      models/model.joblib
+    deps:
+    - path: data/processed
+      hash: md5
+      md5: 5ab80c5e442581d5ffca499d6875a561.dir
+      size: 2512
+      nfiles: 4
+    - path: params.yaml
+      hash: md5
+      md5: 615baede7770e7e74720e84cdce6025a
+      size: 246
+    - path: src/training/train.py
+      hash: md5
+      md5: 8e45ad2b7ea06a6ea4d39080f7701b46
+      size: 3263
+    outs:
+    - path: metrics/val.json
+      hash: md5
+      md5: 8e9864238d16ad6095a6a2a87115f832
+      size: 23
+    - path: models/model.joblib
+      hash: md5
+      md5: 805dcfa62cba16337ca58e6a2755776c
+      size: 847
+  eval:
+    cmd: python -m src.training.eval --model models/model.joblib --data 
+      data/processed --out artifacts
+    deps:
+    - path: data/processed
+      hash: md5
+      md5: 5ab80c5e442581d5ffca499d6875a561.dir
+      size: 2512
+      nfiles: 4
+    - path: models/model.joblib
+      hash: md5
+      md5: 805dcfa62cba16337ca58e6a2755776c
+      size: 847
+    - path: src/training/eval.py
+      hash: md5
+      md5: 3abb4d32118c193f6ebd6bd43b38b962
+      size: 2761
+    outs:
+    - path: artifacts/confusion.png
+      hash: md5
+      md5: e0ace2d619d4c6b87e7c70528ce4326c
+      size: 24545
+    - path: artifacts/roc.png
+      hash: md5
+      md5: 38aa2a89253f7bc057b8dbeff055950b
+      size: 41485
