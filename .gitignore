@@ -1,0 +1,5 @@
+.dvc/cache/ 
+data/ 
+artifacts/ 
+models/ 
+metrics/ 
