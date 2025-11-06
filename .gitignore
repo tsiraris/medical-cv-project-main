@@ -1,9 +1,15 @@
-.dvc/cache/ 
-data/ 
-artifacts/ 
-models/ 
-metrics/ 
-__pycache__/
+# DVC cache and generated data
+.dvc/cache/
+data/
+artifacts/
+models/
+metrics/
+
+# Allow code packages (don’t ignore src/data)
+!src/data/
+!src/data/*.py
+
+# Env & editor
 __pycache__/
 *.pyc
 .vscode/
@@ -13,5 +19,7 @@ __pycache__/
 mlruns/
 .minio/
 medical_cv_serve.egg-info/
+
+# Allow metrics JSON
 !metrics/val.json
-!.env.example
+
