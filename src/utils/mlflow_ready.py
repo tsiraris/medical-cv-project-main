@@ -1,40 +1,52 @@
-import os
+"""
+Waits for an MLflow tracking server *only when* we're using HTTP/HTTPS.
+If using the file backend (MLFLOW_TRACKING_URI = 'file:./mlruns'), there is
+no server to wait for, so we return immediately.
+
+This makes local runs (with server) and CI runs (file backend) both happy.
+"""
+from __future__ import annotations
+
 import time
+from urllib.parse import urlparse
+
 import requests
-from urllib.parse import urlparse, urlunparse
 
-DEFAULT_TRACKING_URI = "http://127.0.0.1:5500"  # host → container 5000 via compose mapping
 
-def _normalize_to_ipv4(uri: str) -> str:
-    """Normalize localhost to 127.0.0.1 to avoid IPv6 (::1) issues on Windows."""
-    try:
-        p = urlparse(uri)
-        host = "127.0.0.1" if p.hostname in (None, "", "localhost") else p.hostname
-        port = p.port or 5500
-        return urlunparse((p.scheme or "http", f"{host}:{port}", p.path or "", "", "", ""))
-    except Exception:
-        return "http://127.0.0.1:5500"
-
-def get_tracking_uri() -> str:
-    """Prefer env, else default. Always normalize to IPv4."""
-    raw = os.getenv("MLFLOW_TRACKING_URI", DEFAULT_TRACKING_URI)
-    return _normalize_to_ipv4(raw)
-
-def wait_for_mlflow(uri: str, timeout_s: int = 180, interval_s: float = 1.5) -> None:
+def wait_for_mlflow(uri: str, timeout_s: int = 180) -> None:
     """
-    Poll the root page (/) until the server is ready or timeout.
-    Any 2xx/3xx/4xx (non-5xx) means the app is up.
+    If uri is http(s), poll /api/2.0/mlflow/experiments/list until ready.
+    If uri is 'file:...' (or empty), return immediately.
     """
-    uri = _normalize_to_ipv4(uri)
+    if not uri:
+        return
+
+    parsed = urlparse(uri)
+
+    # MLflow "file" backend: nothing to wait for.
+    # Note: valid MLflow file URI is 'file:./mlruns' (colon, no '//').
+    if parsed.scheme == "file" or uri.startswith("file:"):
+        return
+
+    # If no recognizable scheme, don't wait.
+    if parsed.scheme not in ("http", "https"):
+        return
+
+    url = uri.rstrip("/") + "/api/2.0/mlflow/experiments/list"
     deadline = time.time() + timeout_s
-    url = f"{uri.rstrip('/')}/"
-    last_err = None
+    last_err: object | None = None
+
     while time.time() < deadline:
         try:
-            r = requests.get(url, timeout=5)
-            if r.status_code < 500:
+            r = requests.get(url, timeout=3)
+            # 200: OK; 401/403 mean server is up but requires auth
+            if r.status_code in (200, 401, 403):
                 return
-        except Exception as e:
+            last_err = f"HTTP {r.status_code}"
+        except Exception as e:  # noqa: BLE001 - we want to show whatever we got
             last_err = e
-        time.sleep(interval_s)
-    raise RuntimeError(f"MLflow not ready at {uri} within {timeout_s}s. Last error: {last_err}")
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"MLflow not ready at {uri} within {timeout_s}s. Last error: {last_err}"
+    )
