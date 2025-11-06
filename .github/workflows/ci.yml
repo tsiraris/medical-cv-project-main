@@ -10,12 +10,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     env:
-      # --- CI-safe MLflow (no server needed) ---
-      # 'file:./mlruns' writes runs to the workspace; registry is not used in CI.
+      # CI-safe MLflow: no server
       MLFLOW_TRACKING_URI: "file:./mlruns"
       MLFLOW_EXPERIMENT_NAME: "ci-demo"
-      # Kept for local parity; ignored by MLflow when using the file backend.
-      MLFLOW_REGISTERED_MODEL_NAME: "cxr-demo"
+      MLFLOW_REGISTERED_MODEL_NAME: "cxr-demo"  # ignored on file backend
 
     steps:
       - name: Checkout
@@ -29,19 +27,22 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          # Core libs your pipeline uses
           pip install "mlflow>=2.16,<3" "dvc[s3]>=3,<4" scikit-learn numpy pandas matplotlib boto3 pyyaml joblib
-          # Install your package if you have pyproject.toml / setup.cfg
           if [ -f "pyproject.toml" ] || [ -f "setup.cfg" ]; then pip install -e .; fi
 
       - name: Reproduce pipeline (DVC)
         run: dvc repro
 
+      - name: Show metrics produced in CI
+        run: |
+          echo "---- metrics/val.json ----"
+          cat metrics/val.json || true
+          echo "--------------------------"
+
       - name: Quality gate
         run: python ci/quality_gate.py
 
-      # Optional: upload artifacts (plots/metrics) for convenience
-      - name: Upload artifacts
+      - name: Upload artifacts (optional)
         if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -11,6 +11,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
 import mlflow
 import mlflow.sklearn
+from mlflow.models.signature import infer_signature
 
 from src.utils.io import ensure_dir, save_json
 from src.utils.mlflow_ready import wait_for_mlflow
@@ -66,21 +67,29 @@ if __name__ == "__main__":
         mlflow.log_metric("acc", float(acc))
         mlflow.log_metric("f1", float(f1))
 
-        # Save model to repo (models/model.joblib) for pipeline continuity
-        outp = Path(args.out)
-        outp.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump(clf, outp)
+        # optional but nice (removes MLflow warning)
+        signature = infer_signature(Xtr, clf.predict(Xtr))
+        input_example = Xtr[:2]
 
-        # Log model artifact to MLflow.
-        # If we're on an HTTP server, you can also register;
-        # with 'file:' backend, registry APIs are not available.
+        # when logging the model:
         if _is_http_uri(tracking_uri):
             reg_name = os.getenv("MLFLOW_REGISTERED_MODEL_NAME", "cxr-demo")
-            mlflow.sklearn.log_model(sk_model=clf, artifact_path="model", registered_model_name=reg_name)
+            mlflow.sklearn.log_model(
+                sk_model=clf,
+                artifact_path="model",
+                registered_model_name=reg_name,
+                signature=signature,
+                input_example=input_example,
+            )
         else:
-            mlflow.sklearn.log_model(sk_model=clf, artifact_path="model")
+            mlflow.sklearn.log_model(
+                sk_model=clf,
+                artifact_path="model",
+                signature=signature,
+                input_example=input_example,
+            )
 
-        # Emit a simple val metrics json for DVC (tracked metric to diff across runs)
+        # write metrics file for DVC / gate
         ensure_dir("metrics")
         save_json({"acc": float(acc), "f1": float(f1)}, "metrics/val.json")
 
