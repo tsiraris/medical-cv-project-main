@@ -1,10 +1,1 @@
-# Default to text with LF in repo; Windows will check out CRLF as needed
-* text=auto
-
-# Force LF for these files (prevents script/Makefile issues)
-*.sh text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-Dockerfile text eol=lf
-Makefile text eol=lf
-*.ps1 text eol=crlf
+"* text=auto" 
