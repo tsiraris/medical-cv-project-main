@@ -1,0 +1,6 @@
+# Automated quality bars for future CI 
+# read this and only promote/register/deploy if these thresholds pass
+promote_if:
+  auc: ">=0.90"
+  sens: ">=0.85"
+  spec: ">=0.85"

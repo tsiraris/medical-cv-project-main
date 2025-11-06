@@ -1,0 +1,10 @@
+# single source of truth for hyperparams
+seed: 42
+model:
+  arch: logistic
+  max_iter: 1000
+train:
+  test_size: 0.2
+  features: [f1, f2, f3, f4]
+
+# A change change here → rerun dvc repro → DVC detects the change and retrains (full provenance).

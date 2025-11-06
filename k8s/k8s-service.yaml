@@ -7,8 +7,8 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: medical-cv-serve
+    app: medical-cv-serve  # connects all Pods with this label
   ports:
     - name: http
-      port: 80
-      targetPort: 8000
+      port: 80             # Port exposed by the service (inside the cluster)
+      targetPort: 8000     # Port inside the container the app listens on

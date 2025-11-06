@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  train-and-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+            python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install dvc[all] mlflow scikit-learn matplotlib pyyaml numpy pandas joblib
+
+      # Use a local file-based MLflow store in CI (no registry)
+      - name: Configure env (CI-safe MLflow)
+        run: |
+          echo "MLFLOW_TRACKING_URI=file:./mlruns" >> $GITHUB_ENV
+          echo "MLFLOW_EXPERIMENT_NAME=ci-demo" >> $GITHUB_ENV
+          echo "MLFLOW_REGISTERED_MODEL_NAME=" >> $GITHUB_ENV
+
+      - name: Reproduce pipeline (DVC)
+        run: dvc repro
+
+      - name: Quality gate
+        run: python ci/quality_gate.py --metrics metrics/val.json --min-acc 0.80 --min-f1 0.80
+
+      - name: Upload metrics & plots
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-and-plots
+          path: |
+            metrics/val.json
+            artifacts/*.png

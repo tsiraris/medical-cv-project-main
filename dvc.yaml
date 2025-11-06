@@ -1,0 +1,30 @@
+# Declares the pipeline graph (preprocess → train → eval): stages with commands, inputs/outputs/metrics.
+
+stages:
+  preprocess:                     # Stage 1: produce processed data
+    cmd: python -m src.data.preprocess --in data/raw --out data/processed
+    deps:                         # If these change → rerun this stage
+      - src/data/preprocess.py
+    outs:                         # DVC tracks these directories/files
+      - data/processed
+
+  train:                          # Stage 2: train + log to MLflow + save model
+    cmd: python -m src.training.train --params params.yaml --out models/model.joblib
+    deps:
+      - src/training/train.py
+      - data/processed
+      - params.yaml               # Changing params triggers retrain
+    outs:
+      - models/model.joblib       # The trained model artifact (DVC-tracked)
+    metrics:
+      - metrics/val.json          # Structured metrics for diffs & CI gates
+
+  eval:                           # Stage 3: create plots
+    cmd: python -m src.training.eval --model models/model.joblib --data data/processed --out artifacts
+    deps:
+      - src/training/eval.py
+      - models/model.joblib
+      - data/processed
+    outs:
+      - artifacts/roc.png
+      - artifacts/confusion.png
