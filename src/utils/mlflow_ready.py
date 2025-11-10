@@ -1,52 +1,63 @@
-"""
-Waits for an MLflow tracking server *only when* we're using HTTP/HTTPS.
-If using the file backend (MLFLOW_TRACKING_URI = 'file:./mlruns'), there is
-no server to wait for, so we return immediately.
-
-This makes local runs (with server) and CI runs (file backend) both happy.
-"""
-from __future__ import annotations
-
+# src/utils/mlflow_ready.py
+import os
 import time
-from urllib.parse import urlparse
-
+import urllib.parse
 import requests
+import mlflow
+from mlflow.tracking import MlflowClient
 
+READY_STATUS = {200, 401, 403}  # 200 OK; 401/403 mean "alive but protected"
 
-def wait_for_mlflow(uri: str, timeout_s: int = 180) -> None:
+def _is_http_uri(uri: str) -> bool:
+    try:
+        scheme = urllib.parse.urlparse(uri).scheme.lower()
+        return scheme in {"http", "https"}
+    except Exception:
+        return False
+
+def wait_for_mlflow(uri: str, timeout: float = 180.0, interval: float = 2.0) -> None:
     """
-    If uri is http(s), poll /api/2.0/mlflow/experiments/list until ready.
-    If uri is 'file:...' (or empty), return immediately.
+    Waits for an HTTP(S) MLflow tracking server to be reachable.
+    - No-op for non-HTTP URIs (e.g., file:).
+    - Accepts 404 on root (some servers route UI differently).
+    - Final check uses MlflowClient.search_experiments (MLflow >= 2.x).
+    Set MLFLOW_WAIT_DISABLE=1 to bypass.
     """
-    if not uri:
+    if os.getenv("MLFLOW_WAIT_DISABLE") == "1":
         return
 
-    parsed = urlparse(uri)
+    if not _is_http_uri(uri):
+        return  # file backend etc.
 
-    # MLflow "file" backend: nothing to wait for.
-    # Note: valid MLflow file URI is 'file:./mlruns' (colon, no '//').
-    if parsed.scheme == "file" or uri.startswith("file:"):
-        return
+    base = uri.rstrip("/")
+    endpoints = [
+        base,  # may be 404 and still healthy
+        f"{base}/health",
+        f"{base}/api/2.0/mlflow/experiments/list",
+    ]
 
-    # If no recognizable scheme, don't wait.
-    if parsed.scheme not in ("http", "https"):
-        return
+    start = time.time()
+    last_err = None
 
-    url = uri.rstrip("/") + "/api/2.0/mlflow/experiments/list"
-    deadline = time.time() + timeout_s
-    last_err: object | None = None
-
-    while time.time() < deadline:
-        try:
-            r = requests.get(url, timeout=3)
-            # 200: OK; 401/403 mean server is up but requires auth
-            if r.status_code in (200, 401, 403):
-                return
-            last_err = f"HTTP {r.status_code}"
-        except Exception as e:  # noqa: BLE001 - we want to show whatever we got
-            last_err = e
-        time.sleep(2)
+    while time.time() - start < timeout:
+        for url in endpoints:
+            try:
+                resp = requests.get(url, timeout=5)
+                if (resp.status_code in READY_STATUS) or (url == base and resp.status_code == 404):
+                    # definitive check via tracking client
+                    _old = mlflow.get_tracking_uri()
+                    try:
+                        mlflow.set_tracking_uri(uri)
+                        # Works on MLflow 2.x
+                        MlflowClient().search_experiments(max_results=1)
+                        return
+                    finally:
+                        mlflow.set_tracking_uri(_old)
+            except Exception as e:
+                last_err = e
+                # try next endpoint / retry
+        time.sleep(interval)
 
     raise RuntimeError(
-        f"MLflow not ready at {uri} within {timeout_s}s. Last error: {last_err}"
+        f"MLflow not ready at {uri} within {timeout}s. Last error: {last_err}"
     )
