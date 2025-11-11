@@ -1,0 +1,62 @@
+name: Nightly retrain & promote
+on:
+  schedule:
+    - cron: "15 1 * * *"   # 03:15 EEST (Bucharest +2)
+  workflow_dispatch: {}
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt dvc[all]==3.51.2 mlflow==2.18.0 boto3
+
+      - name: Run pipeline (file backend)
+        env:
+          MLFLOW_TRACKING_URI: file:./mlruns
+        run: dvc repro --force
+
+      - name: Compare + decide (simple gate)
+        id: gate
+        run: |
+          python - <<'PY'
+          import json,sys
+          m=json.load(open("metrics/val.json"))
+          print("f1=",m.get("f1"))
+          # set output "promote" if f1>=0.80
+          print(f"promote={'true' if float(m.get('f1',0))>=0.80 else 'false'}")
+          PY
+
+      - name: Register to remote MLflow & set alias
+        if: steps.gate.outputs.promote == 'true'
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_S3_ENDPOINT_URL: ${{ secrets.MLFLOW_S3_ENDPOINT_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
+          TARGET_ALIAS: Production
+        run: |
+          python - <<'PY'
+          import os, json
+          ri=json.load(open("metrics/run_info.json"))
+          os.environ["RUN_ID"]=ri["run_id"]
+          PY
+          python ci/register_and_promote.py
+
+      - name: Upload metrics & model (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-model-and-metrics
+          path: |
+            metrics/val.json
+            models/model.joblib
