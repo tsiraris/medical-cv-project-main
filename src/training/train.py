@@ -145,3 +145,4 @@ if __name__ == "__main__":
         save_json({"acc": float(acc), "f1": float(f1)}, "metrics/val.json")
 
         print({"acc": acc, "f1": f1, "run_id": run.info.run_id})
+        save_json({"run_id": run.info.run_id}, "metrics/run_info.json")

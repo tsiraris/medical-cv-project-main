@@ -24,3 +24,4 @@ medical_cv_serve.egg-info/
 !metrics/val.json
 
 tmp_artifacts/ 
+tmp_artifacts/

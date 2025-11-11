@@ -1,25 +1,31 @@
-# Docker Compose file to set up MLflow stack (MLflow Tracking Server with PostgreSQL and MinIO)
+# Docker Compose file to set up full MLflow stack:
+# PostgreSQL (tracking DB), MinIO (S3 artifact store),
+# MLflow Tracking Server, and the FastAPI inference app.
+
 services:
-  postgres:                        # MLflow tracking DB (runs metadata, params, metrics)
+  postgres:
     image: postgres:15
     environment:
       POSTGRES_PASSWORD: mlflow
       POSTGRES_USER: mlflow
       POSTGRES_DB: mlflow
-    ports: ["5432:5432"]
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  minio:                            # S3-like artifact store (models, plots, …)
+  minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
-    ports: ["9000:9000","9001:9001"]   # 9001 is the MinIO web console
+    ports:
+      - "9000:9000"
+      - "9001:9001"       # MinIO web console
     volumes:
       - ./../.minio:/data
     healthcheck:
@@ -28,7 +34,8 @@ services:
       timeout: 3s
       retries: 20
 
-  minio-init:                       # One-shot helper to create the 'mlflow' bucket before MLflow starts
+  # One-shot helper: create the 'mlflow' bucket before MLflow starts
+  minio-init:
     image: amazon/aws-cli:2.17.39
     entrypoint: [ "sh", "-lc" ]
     command: >
@@ -42,6 +49,7 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # MLflow Tracking Server
   mlflow:
     image: python:3.11-slim
     working_dir: /app
@@ -51,7 +59,6 @@ services:
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio123
       AWS_DEFAULT_REGION: us-east-1
-      # (optional, also respected by mlflow server)
       MLFLOW_ARTIFACTS_DESTINATION: s3://mlflow/
     command:
       - sh
@@ -66,7 +73,7 @@ services:
           --default-artifact-root="s3://mlflow/" \
           --serve-artifacts
     ports:
-      - "5500:5000"
+      - "5500:5000"    # localhost:5500 -> MLflow UI
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,3 +82,32 @@ services:
       minio-init:
         condition: service_completed_successfully
 
+  # FastAPI inference app (serving the Production alias)
+  app:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ..:/app            # mount repo root (adjust if needed)
+    environment:
+      # Talk to MLflow/MinIO inside Docker network
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+      AWS_DEFAULT_REGION: us-east-1
+      MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
+      MLFLOW_MODEL_ALIAS: Production
+      PYTHONUNBUFFERED: "1"
+    command: >
+      sh -c "
+      pip install --no-cache-dir --upgrade pip &&
+      pip install --no-cache-dir uvicorn fastapi pydantic 'mlflow==2.18.0' boto3 gunicorn &&
+      gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 --timeout 60
+      "
+    ports:
+      - "8000:8000"       # localhost:8000 -> API
+    depends_on:
+      mlflow:
+        condition: service_started
+      minio:
+        condition: service_healthy
