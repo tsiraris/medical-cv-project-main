@@ -2,6 +2,7 @@
     remote = minio
 ['remote "minio"']
     url = s3://mlflow/dvc
-    endpointurl = http://127.0.0.1:9000
+    endpointurl = http://localhost:9000
     access_key_id = minio
     secret_access_key = minio123
+    use_ssl = false

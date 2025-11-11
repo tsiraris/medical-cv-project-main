@@ -42,13 +42,29 @@ jobs:
       - name: Quality gate
         run: python ci/quality_gate.py
 
-      - name: Upload artifacts (optional)
-        if: always()
+      - name: Upload metrics & model (local copy)
         uses: actions/upload-artifact@v4
         with:
-          name: ci-artifacts
+          name: model-and-metrics
           path: |
-            artifacts/**
-            metrics/**
-            mlruns/**
-          if-no-files-found: ignore
+            metrics/val.json
+            models/model.joblib
+      
+      - name: Register model & set alias (main only)
+        if: github.ref == 'refs/heads/main'
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_S3_ENDPOINT_URL: ${{ secrets.MLFLOW_S3_ENDPOINT_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
+          TARGET_ALIAS: Production
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          ri = json.loads(Path("metrics/run_info.json").read_text())
+          os.environ["RUN_ID"] = ri["run_id"]
+          PY
+          python ci/register_and_promote.py
