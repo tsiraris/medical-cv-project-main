@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:
@@ -67,102 +67,61 @@ jobs:
           done
 
       - name: Start MLflow (local server)
-        shell: bash
         env:
-          PGHOST: localhost
-          PGPORT: "5432"
-          PGUSER: postgres
-          PGPASSWORD: postgres
           MLFLOW_BACKEND_STORE_URI: postgresql://postgres:postgres@localhost:5432/mlflow
           MLFLOW_ARTIFACTS_DESTINATION: file://${{ github.workspace }}/mlruns_artifacts
         run: |
           set -euo pipefail
 
-          # sanity check: psycopg2 is importable
-          python - <<'PY'
-import psycopg2
-print("psycopg2 OK")
-PY
+          # sanity: psycopg2 import
+          python -c "import psycopg2; print('psycopg2 OK')"
 
           # start mlflow in background
           nohup mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
-            --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
-            --default-artifact-root "${MLFLOW_ARTIFACTS_DESTINATION}" \
+            --backend-store-uri \"$MLFLOW_BACKEND_STORE_URI\" \
+            --default-artifact-root \"$MLFLOW_ARTIFACTS_DESTINATION\" \
             --serve-artifacts \
             > mlflow.log 2>&1 &
 
+          # export tracking URI for later steps
           echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
 
-          # Wait for MLflow to respond
+          # wait until Mlflow answers ML client calls
           for i in $(seq 1 90); do
-            python - <<'PY'
-import os
-import mlflow
-from mlflow.tracking import MlflowClient
-try:
-    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-    _ = MlflowClient().list_experiments()
-    print("MLflow client OK")
-except Exception as e:
-    raise SystemExit(1)
-PY
-            if [ $? -eq 0 ]; then
-              echo "MLflow is up on http://127.0.0.1:5000"
-              break
-            fi
-            echo "Waiting for MLflow... ($i)"
+            python -c "import os, mlflow; from mlflow.tracking import MlflowClient; mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); MlflowClient().list_experiments(); print('MLflow client OK')" \
+              && break || true
+            echo 'Waiting for MLflow... ('$i')'
             sleep 2
           done
 
-          # also log version for debugging
+          # debug info
           curl -sS http://127.0.0.1:5000/version || true
-
-          echo "---- tail mlflow.log (last 50 lines) ----"
+          echo '---- tail mlflow.log (last 50 lines) ----'
           tail -n 50 mlflow.log || true
 
       - name: Run DVC pipeline
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-        run: |
-          dvc repro --force
+        run: dvc repro --force
 
       - name: Sanity check MLflow API
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
         run: |
-          python - <<'PY'
-import os
-import mlflow
-from mlflow.tracking import MlflowClient
-mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-client = MlflowClient()
-print("Experiments:", [e.name for e in client.list_experiments()])
-print("MLflow OK")
-PY
+          python -c "import os, mlflow; from mlflow.tracking import MlflowClient; mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); print('Experiments:', [e.name for e in MlflowClient().list_experiments()]); print('MLflow OK')"
 
       - name: Extract RUN_ID from metrics
         run: |
-          python - <<'PY'
-import json, os, pathlib, sys
-path = pathlib.Path("metrics/run_info.json")
-if not path.exists():
-    print("❌ metrics/run_info.json not found", file=sys.stderr)
-    sys.exit(1)
-data = json.loads(path.read_text())
-run_id = data.get("run_id")
-print("✅ Run ID:", run_id)
-with open(os.environ["GITHUB_ENV"], "a") as f:
-    f.write(f"RUN_ID={run_id}\n")
-PY
+          python -c "import json, sys; d=json.load(open('metrics/run_info.json')); ri=d.get('run_id'); print('Run ID:', ri); open('$GITHUB_ENV','a').write(f'RUN_ID={ri}\n')"
 
-      - name: Register model & set alias
+      - name: Register model & set alias (main only)
+        if: github.ref == 'refs/heads/main'
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
           MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
           MLFLOW_MODEL_ALIAS: Production
           RUN_ID: ${{ env.RUN_ID }}
           PROMOTE_F1_THRESHOLD: "0.80"
-        run: |
-          python ci/register_and_promote.py
+        run: python ci/register_and_promote.py
