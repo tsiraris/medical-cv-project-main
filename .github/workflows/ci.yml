@@ -2,173 +2,167 @@ name: CI
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main", "develop" ]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"  # optional nightly run
 
 jobs:
-  build-test-register:
+  ci:
     runs-on: ubuntu-latest
 
     services:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_PASSWORD: mlflow
-          POSTGRES_USER: mlflow
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: mlflow
-        ports: ["5432:5432"]
+        ports:
+          - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U mlflow -d mlflow"
-          --health-interval=5s --health-timeout=3s --health-retries=10
+          --health-cmd="pg_isready -U postgres -d mlflow"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # -----------------------------------
-      # Base deps (add psycopg2-binary here)
-      # -----------------------------------
-      - name: Install deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          # Try to install your project deps if present (don’t fail if missing)
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Ensure CI-critical deps are present regardless of requirements.txt
-          pip install \
-            "dvc[all]==3.63.0" \
-            "mlflow==2.18.0" \
-            "psycopg2-binary" \
-            "boto3" \
-            "scikit-learn==1.7.2" \
-            "numpy" "pandas" "matplotlib" "pyyaml" "joblib"
-
-      # -----------------------------------
-      # AWS CLI v2
-      # -----------------------------------
-      - name: Install AWS CLI v2
+      - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip curl
-          curl -fsSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
-          unzip -q awscliv2.zip
-          sudo ./aws/install --update
-          aws --version
+          sudo apt-get install -y postgresql-client curl
 
-      # -----------------------------------
-      # MinIO (container) + bucket
-      # -----------------------------------
-      - name: Start MinIO
+      - name: Install Python deps
         run: |
-          docker run -d --name minio \
-            -e MINIO_ROOT_USER=minio \
-            -e MINIO_ROOT_PASSWORD=minio123 \
-            -p 9000:9000 -p 9001:9001 \
-            minio/minio:latest server /data --console-address ":9001"
-          for i in {1..90}; do
-            if curl -fsS "http://localhost:9000/minio/health/ready" >/dev/null; then
-              echo "✅ MinIO is ready"; break
+          python -m pip install --upgrade pip
+          pip install \
+            "mlflow==2.18.0" \
+            "psycopg2-binary" \
+            "dvc[s3]==3.63.0" \
+            scikit-learn numpy pandas matplotlib pyyaml joblib boto3
+
+      - name: Wait for Postgres
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: |
+          for i in $(seq 1 60); do
+            if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; then
+              echo "Postgres is ready"
+              break
             fi
-            echo "Waiting for MinIO..."; sleep 2
+            echo "Waiting for Postgres... ($i)"
+            sleep 2
           done
 
-      - name: Create MinIO bucket (mlflow)
+      - name: Start MLflow (local server)
+        shell: bash
         env:
-          AWS_ACCESS_KEY_ID: minio
-          AWS_SECRET_ACCESS_KEY: minio123
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          MLFLOW_BACKEND_STORE_URI: postgresql://postgres:postgres@localhost:5432/mlflow
+          MLFLOW_ARTIFACTS_DESTINATION: file://${{ github.workspace }}/mlruns_artifacts
         run: |
-          aws --endpoint-url http://localhost:9000 s3 mb s3://mlflow || true
-          aws --endpoint-url http://localhost:9000 s3 ls
+          set -euo pipefail
 
-      # -----------------------------------
-      # Start MLflow on the host (NOT Docker)
-      # -----------------------------------
-      - name: Start MLflow (host process)
-        env:
-          MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
-          MLFLOW_S3_ENDPOINT_URL: http://localhost:9000
-          AWS_ACCESS_KEY_ID: minio
-          AWS_SECRET_ACCESS_KEY: minio123
-          AWS_DEFAULT_REGION: us-east-1
-          PYTHONUNBUFFERED: "1"
-        run: |
-          # sanity: ensure psycopg2 import works
-          python -c "import psycopg2; print('psycopg2 OK')"
+          # sanity check: psycopg2 is importable
+          python - <<'PY'
+import psycopg2
+print("psycopg2 OK")
+PY
 
-          # start MLflow
+          # start mlflow in background
           nohup mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
-            --backend-store-uri "$MLFLOW_BACKEND_STORE_URI" \
-            --default-artifact-root "s3://mlflow/" \
+            --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
+            --default-artifact-root "${MLFLOW_ARTIFACTS_DESTINATION}" \
             --serve-artifacts \
             > mlflow.log 2>&1 &
 
-          # wait for MLflow
-          for i in {1..120}; do
-            if curl -fsS "http://127.0.0.1:5000/api/2.0/mlflow/experiments/list" >/dev/null; then
-              echo "✅ MLflow is ready"; break
+          echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
+
+          # Wait for MLflow to respond
+          for i in $(seq 1 90); do
+            python - <<'PY'
+import os
+import mlflow
+from mlflow.tracking import MlflowClient
+try:
+    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+    _ = MlflowClient().list_experiments()
+    print("MLflow client OK")
+except Exception as e:
+    raise SystemExit(1)
+PY
+            if [ $? -eq 0 ]; then
+              echo "MLflow is up on http://127.0.0.1:5000"
+              break
             fi
-            if [ $i -eq 1 ] || [ $((i%10)) -eq 0 ]; then
-              echo "---- tail mlflow.log (last 50 lines) ----"
-              tail -n 50 mlflow.log || true
-            fi
-            echo "Waiting for MLflow... ($i)"; sleep 2
+            echo "Waiting for MLflow... ($i)"
+            sleep 2
           done
-          echo "---- final mlflow.log tail ----"
-          tail -n 200 mlflow.log || true
 
-      # -----------------------------------
-      # DVC repro (file backend to keep CI hermetic)
-      # -----------------------------------
-      - name: DVC repro (file backend)
+          # also log version for debugging
+          curl -sS http://127.0.0.1:5000/version || true
+
+          echo "---- tail mlflow.log (last 50 lines) ----"
+          tail -n 50 mlflow.log || true
+
+      - name: Run DVC pipeline
         env:
-          MLFLOW_TRACKING_URI: file:./mlruns
-        run: dvc repro --force
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+        run: |
+          dvc repro --force
 
-      - name: Quality gate
-        run: python ci/quality_gate.py
-
-      # -----------------------------------
-      # Register & set alias (main only) against the MLflow we started
-      # -----------------------------------
-      - name: Register model & set alias (main only)
-        if: github.ref == 'refs/heads/main'
+      - name: Sanity check MLflow API
         env:
-          MLFLOW_TRACKING_URI: http://127.0.0.1:5000
-          MLFLOW_S3_ENDPOINT_URL: http://localhost:9000
-          AWS_ACCESS_KEY_ID: minio
-          AWS_SECRET_ACCESS_KEY: minio123
-          AWS_DEFAULT_REGION: us-east-1
-          MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
-          TARGET_ALIAS: Production
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
         run: |
           python - <<'PY'
-          import os, json
-          from pathlib import Path
-          ri = json.loads(Path("metrics/run_info.json").read_text())
-          os.environ["RUN_ID"] = ri["run_id"]
-          print("[registry] Using tracking URI:", os.getenv("MLFLOW_TRACKING_URI"))
-          print("[registry] Model name:", os.getenv("MLFLOW_REGISTERED_MODEL_NAME"))
-          print("[registry] Run id:", os.getenv("RUN_ID"))
-          PY
-          python ci/register_and_promote.py
+import os
+import mlflow
+from mlflow.tracking import MlflowClient
+mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+client = MlflowClient()
+print("Experiments:", [e.name for e in client.list_experiments()])
+print("MLflow OK")
+PY
 
-      # -----------------------------------
-      # Upload debugging artifacts
-      # -----------------------------------
-      - name: Upload run artifacts (debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-run
-          path: |
-            metrics/val.json
-            metrics/run_info.json
-            models/model.joblib
-            mlflow.log
+      - name: Extract RUN_ID from metrics
+        run: |
+          python - <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path("metrics/run_info.json")
+if not path.exists():
+    print("❌ metrics/run_info.json not found", file=sys.stderr)
+    sys.exit(1)
+data = json.loads(path.read_text())
+run_id = data.get("run_id")
+print("✅ Run ID:", run_id)
+with open(os.environ["GITHUB_ENV"], "a") as f:
+    f.write(f"RUN_ID={run_id}\n")
+PY
+
+      - name: Register model & set alias
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
+          MLFLOW_MODEL_ALIAS: Production
+          RUN_ID: ${{ env.RUN_ID }}
+          PROMOTE_F1_THRESHOLD: "0.80"
+        run: |
+          python ci/register_and_promote.py
