@@ -1,1 +1,5 @@
 "* text=auto" 
+# Keep GitHub Actions & shell scripts with LF endings
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
