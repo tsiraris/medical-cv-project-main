@@ -57,7 +57,7 @@ jobs:
           aws --version
 
       # -----------------------------
-      # Start MinIO and MLflow stack
+      # Start MinIO (container) and wait
       # -----------------------------
       - name: Start MinIO
         run: |
@@ -83,40 +83,34 @@ jobs:
           aws --endpoint-url http://localhost:9000 s3 mb s3://mlflow || true
           aws --endpoint-url http://localhost:9000 s3 ls
 
-      - name: Start MLflow
+      # -----------------------------
+      # Start MLflow ON THE HOST (not in Docker) and wait
+      # -----------------------------
+      - name: Start MLflow (host process)
         env:
           MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
           MLFLOW_S3_ENDPOINT_URL: http://localhost:9000
-          AWS_ACCESS_KEY_ID: minio
-          AWS_SECRET_ACCESS_KEY: minio123
-          AWS_DEFAULT_REGION: us-east-1
         run: |
-          docker run -d --name mlflow \
-            -e MLFLOW_BACKEND_STORE_URI="$MLFLOW_BACKEND_STORE_URI" \
-            -e MLFLOW_S3_ENDPOINT_URL="$MLFLOW_S3_ENDPOINT_URL" \
-            -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-            -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-            -e AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION" \
-            -p 5000:5000 \
-            python:3.11-slim \
-            sh -lc "pip install --no-cache-dir mlflow==2.18.0 boto3 psycopg2-binary && \
-                    mlflow server \
-                      --host=0.0.0.0 \
-                      --port=5000 \
-                      --backend-store-uri=\$MLFLOW_BACKEND_STORE_URI \
-                      --default-artifact-root='s3://mlflow/' \
-                      --serve-artifacts"
+          nohup mlflow server \
+            --host 127.0.0.1 \
+            --port 5000 \
+            --backend-store-uri "$MLFLOW_BACKEND_STORE_URI" \
+            --default-artifact-root "s3://mlflow/" \
+            --serve-artifacts \
+            > mlflow.log 2>&1 &
           # Wait for MLflow readiness
           for i in {1..60}; do
-            if curl -fsS http://localhost:5000/api/2.0/mlflow/experiments/list >/dev/null; then
+            if curl -fsS http://127.0.0.1:5000/api/2.0/mlflow/experiments/list >/dev/null; then
               echo "✅ MLflow is ready"
               break
             fi
             echo "Waiting for MLflow..."; sleep 2
           done
+          echo "---- MLflow last 50 lines ----"
+          tail -n 50 mlflow.log || true
 
       # -----------------------------
-      # Run pipeline & checks
+      # Run pipeline & checks (file backend to keep CI hermetic)
       # -----------------------------
       - name: DVC repro (file backend)
         env:
@@ -127,12 +121,12 @@ jobs:
         run: python ci/quality_gate.py
 
       # -----------------------------
-      # Register and promote (main only)
+      # Register and promote (main only) into the MLflow we started
       # -----------------------------
       - name: Register model & set alias (main only)
         if: github.ref == 'refs/heads/main'
         env:
-          MLFLOW_TRACKING_URI: http://localhost:5000
+          MLFLOW_TRACKING_URI: http://127.0.0.1:5000
           MLFLOW_S3_ENDPOINT_URL: http://localhost:9000
           AWS_ACCESS_KEY_ID: minio
           AWS_SECRET_ACCESS_KEY: minio123
@@ -159,3 +153,4 @@ jobs:
             metrics/val.json
             metrics/run_info.json
             models/model.joblib
+            mlflow.log
