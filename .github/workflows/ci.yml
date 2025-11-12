@@ -71,29 +71,40 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Sanity: ensure psycopg2 works
+          # Sanity: ensure psycopg2 is importable
           python -c "import psycopg2; print('psycopg2 OK')"
 
-          # Launch MLflow in background
+          # Provide safe defaults so set -u doesn't fail if envs are missing
+          BACKEND_URI="${MLFLOW_BACKEND_STORE_URI:-sqlite:///${GITHUB_WORKSPACE}/mlruns.db}"
+          ARTIFACT_ROOT="${MLFLOW_ARTIFACTS_DESTINATION:-file://${GITHUB_WORKSPACE}/mlruns_artifacts}"
+
+          echo "Using BACKEND_URI=${BACKEND_URI}"
+          echo "Using ARTIFACT_ROOT=${ARTIFACT_ROOT}"
+
+          mkdir -p "${GITHUB_WORKSPACE}/mlruns_artifacts"
+
+          # Launch MLflow in the background
           nohup mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
-            --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
-            --default-artifact-root "${MLFLOW_ARTIFACTS_DESTINATION}" \
+            --backend-store-uri "${BACKEND_URI}" \
+            --default-artifact-root "${ARTIFACT_ROOT}" \
             --serve-artifacts \
             > mlflow.log 2>&1 &
 
+          # Export tracking URI for later steps
           echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
 
-          # Wait until MLflow responds by hitting its REST API via MlflowClient
+          # Wait until MLflow responds via the Python client
           for i in $(seq 1 90); do
             if python - <<'PY'
-              import os, mlflow
-              from mlflow.tracking import MlflowClient
-              mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-              MlflowClient().search_experiments()
-              print("MLflow client OK")
-            PY
+      import os, mlflow
+      from mlflow.tracking import MlflowClient
+      mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+      # This will raise if the server isn't ready yet
+      _ = MlflowClient().search_experiments()
+      print("MLflow client OK")
+      PY
             then
               echo "MLflow is up on http://127.0.0.1:5000"
               break
@@ -103,9 +114,18 @@ jobs:
             fi
           done
 
-          curl -sS http://127.0.0.1:5000/version || true
-          echo "---- tail mlflow.log (last 50 lines) ----"
-          tail -n 50 mlflow.log || true
+          # Helpful diagnostics
+          python - <<'PY'
+      import os, requests
+      url = os.environ.get("MLFLOW_TRACKING_URI", "") + "/version"
+      try:
+          print("Server /version:", requests.get(url, timeout=5).text)
+      except Exception as e:
+          print("Could not fetch /version:", e)
+      PY
+
+          echo "---- tail mlflow.log (last 100 lines) ----"
+          tail -n 100 mlflow.log || true
 
       - name: Run DVC pipeline
         env:
