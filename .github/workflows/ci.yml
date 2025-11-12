@@ -34,21 +34,20 @@ jobs:
       # Base deps (add psycopg2-binary here)
       # -----------------------------------
       - name: Install deps
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-            # make sure we still have these (in case reqs don’t include them)
-            pip install "mlflow==2.18.0" "psycopg2-binary" boto3
-          else
-            echo "No requirements.txt — installing known deps directly"
-            pip install \
-              dvc[all]==3.51.2 \
-              mlflow==2.18.0 \
-              psycopg2-binary \
-              boto3 \
-              scikit-learn==1.7.2 \
-              numpy pandas matplotlib pyyaml joblib
+          # Try to install your project deps if present (don’t fail if missing)
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Ensure CI-critical deps are present regardless of requirements.txt
+          pip install \
+            "dvc[all]==3.63.0" \
+            "mlflow==2.18.0" \
+            "psycopg2-binary" \
+            "boto3" \
+            "scikit-learn==1.7.2" \
+            "numpy" "pandas" "matplotlib" "pyyaml" "joblib"
 
       # -----------------------------------
       # AWS CLI v2
