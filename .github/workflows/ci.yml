@@ -125,17 +125,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -c "import os, mlflow; from mlflow.tracking import MlflowClient; \
-                    mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); \
-                    name=os.environ['MLFLOW_REGISTERED_MODEL_NAME']; \
-                    rid=os.environ['RUN_ID']; \
-                    client=MlflowClient(); \
-                    try: client.get_registered_model(name); \
-                    except Exception: client.create_registered_model(name); \
-                    src=f'runs:/{rid}/model'; \
-                    mv=client.create_model_version(name=name, source=src, run_id=rid); \
-                    client.set_registered_model_alias(name, os.environ['MLFLOW_MODEL_ALIAS'], mv.version); \
-                    print(f\"Alias '{os.environ['MLFLOW_MODEL_ALIAS']}' -> {name}-v{mv.version}\")"
+          echo "Registering model and setting alias..."
+
+          python -m mlflow.utils.cli_utils run-python - <<'EOF'
+          import os, mlflow
+          from mlflow.tracking import MlflowClient
+
+          mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+          name  = os.environ["MLFLOW_REGISTERED_MODEL_NAME"]
+          rid   = os.environ["RUN_ID"]
+          alias = os.environ["MLFLOW_MODEL_ALIAS"]
+
+          client = MlflowClient()
+
+          # Check if the model exists first
+          models = client.search_registered_models(filter_string=f"name = '{name}'")
+          if not models:
+              client.create_registered_model(name)
+              print(f"Created registered model: {name}")
+
+          src = f"runs:/{rid}/model"
+          mv = client.create_model_version(name=name, source=src, run_id=rid)
+          client.set_registered_model_alias(name, alias, mv.version)
+          print(f"Alias '{alias}' now points to {name} v{mv.version}")
+          EOF
 
       - name: Upload mlflow.log (debug)
         if: always()
