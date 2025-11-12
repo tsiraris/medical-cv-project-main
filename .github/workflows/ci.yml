@@ -30,23 +30,29 @@ jobs:
         with:
           python-version: "3.11"
 
-      # -----------------------------
-      # Dependency installation
-      # -----------------------------
+      # -----------------------------------
+      # Base deps (add psycopg2-binary here)
+      # -----------------------------------
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
+            # make sure we still have these (in case reqs don’t include them)
+            pip install "mlflow==2.18.0" "psycopg2-binary" boto3
           else
-            echo "No requirements.txt found — installing known deps directly"
-            pip install dvc[all]==3.51.2 mlflow==2.18.0 boto3 \
-                        scikit-learn==1.7.2 numpy pandas matplotlib pyyaml joblib
-          fi
+            echo "No requirements.txt — installing known deps directly"
+            pip install \
+              dvc[all]==3.51.2 \
+              mlflow==2.18.0 \
+              psycopg2-binary \
+              boto3 \
+              scikit-learn==1.7.2 \
+              numpy pandas matplotlib pyyaml joblib
 
-      # -----------------------------
-      # Install AWS CLI v2 (official installer)
-      # -----------------------------
+      # -----------------------------------
+      # AWS CLI v2
+      # -----------------------------------
       - name: Install AWS CLI v2
         run: |
           sudo apt-get update
@@ -56,9 +62,9 @@ jobs:
           sudo ./aws/install --update
           aws --version
 
-      # -----------------------------
-      # Start MinIO (container) and wait
-      # -----------------------------
+      # -----------------------------------
+      # MinIO (container) + bucket
+      # -----------------------------------
       - name: Start MinIO
         run: |
           docker run -d --name minio \
@@ -66,11 +72,9 @@ jobs:
             -e MINIO_ROOT_PASSWORD=minio123 \
             -p 9000:9000 -p 9001:9001 \
             minio/minio:latest server /data --console-address ":9001"
-          # Wait for MinIO readiness
-          for i in {1..60}; do
-            if curl -fsS http://localhost:9000/minio/health/ready >/dev/null; then
-              echo "✅ MinIO is ready"
-              break
+          for i in {1..90}; do
+            if curl -fsS "http://localhost:9000/minio/health/ready" >/dev/null; then
+              echo "✅ MinIO is ready"; break
             fi
             echo "Waiting for MinIO..."; sleep 2
           done
@@ -83,14 +87,22 @@ jobs:
           aws --endpoint-url http://localhost:9000 s3 mb s3://mlflow || true
           aws --endpoint-url http://localhost:9000 s3 ls
 
-      # -----------------------------
-      # Start MLflow ON THE HOST (not in Docker) and wait
-      # -----------------------------
+      # -----------------------------------
+      # Start MLflow on the host (NOT Docker)
+      # -----------------------------------
       - name: Start MLflow (host process)
         env:
           MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
           MLFLOW_S3_ENDPOINT_URL: http://localhost:9000
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: minio123
+          AWS_DEFAULT_REGION: us-east-1
+          PYTHONUNBUFFERED: "1"
         run: |
+          # sanity: ensure psycopg2 import works
+          python -c "import psycopg2; print('psycopg2 OK')"
+
+          # start MLflow
           nohup mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
@@ -98,20 +110,24 @@ jobs:
             --default-artifact-root "s3://mlflow/" \
             --serve-artifacts \
             > mlflow.log 2>&1 &
-          # Wait for MLflow readiness
-          for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:5000/api/2.0/mlflow/experiments/list >/dev/null; then
-              echo "✅ MLflow is ready"
-              break
-            fi
-            echo "Waiting for MLflow..."; sleep 2
-          done
-          echo "---- MLflow last 50 lines ----"
-          tail -n 50 mlflow.log || true
 
-      # -----------------------------
-      # Run pipeline & checks (file backend to keep CI hermetic)
-      # -----------------------------
+          # wait for MLflow
+          for i in {1..120}; do
+            if curl -fsS "http://127.0.0.1:5000/api/2.0/mlflow/experiments/list" >/dev/null; then
+              echo "✅ MLflow is ready"; break
+            fi
+            if [ $i -eq 1 ] || [ $((i%10)) -eq 0 ]; then
+              echo "---- tail mlflow.log (last 50 lines) ----"
+              tail -n 50 mlflow.log || true
+            fi
+            echo "Waiting for MLflow... ($i)"; sleep 2
+          done
+          echo "---- final mlflow.log tail ----"
+          tail -n 200 mlflow.log || true
+
+      # -----------------------------------
+      # DVC repro (file backend to keep CI hermetic)
+      # -----------------------------------
       - name: DVC repro (file backend)
         env:
           MLFLOW_TRACKING_URI: file:./mlruns
@@ -120,9 +136,9 @@ jobs:
       - name: Quality gate
         run: python ci/quality_gate.py
 
-      # -----------------------------
-      # Register and promote (main only) into the MLflow we started
-      # -----------------------------
+      # -----------------------------------
+      # Register & set alias (main only) against the MLflow we started
+      # -----------------------------------
       - name: Register model & set alias (main only)
         if: github.ref == 'refs/heads/main'
         env:
@@ -139,12 +155,15 @@ jobs:
           from pathlib import Path
           ri = json.loads(Path("metrics/run_info.json").read_text())
           os.environ["RUN_ID"] = ri["run_id"]
+          print("[registry] Using tracking URI:", os.getenv("MLFLOW_TRACKING_URI"))
+          print("[registry] Model name:", os.getenv("MLFLOW_REGISTERED_MODEL_NAME"))
+          print("[registry] Run id:", os.getenv("RUN_ID"))
           PY
           python ci/register_and_promote.py
 
-      # -----------------------------
+      # -----------------------------------
       # Upload debugging artifacts
-      # -----------------------------
+      # -----------------------------------
       - name: Upload run artifacts (debug)
         uses: actions/upload-artifact@v4
         with:
