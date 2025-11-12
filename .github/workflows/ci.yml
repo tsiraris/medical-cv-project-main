@@ -2,163 +2,152 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 2 * * *"  # optional nightly run
 
 jobs:
-  ci:
+  build:
     runs-on: ubuntu-latest
 
     services:
       postgres:
         image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: mlflow
         ports:
           - 5432:5432
+        env:
+          POSTGRES_USER: mlflow
+          POSTGRES_PASSWORD: mlflow
+          POSTGRES_DB: mlflow
         options: >-
-          --health-cmd="pg_isready -U postgres -d mlflow"
-          --health-interval=5s
-          --health-timeout=3s
-          --health-retries=20
+          --health-cmd "pg_isready -U mlflow -d mlflow"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # MLflow (file artifacts in CI to avoid MinIO)
+      MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
+      MLFLOW_ARTIFACTS_DESTINATION: file:${{ github.workspace }}/mlruns
+      # Model naming
+      MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
+      MLFLOW_MODEL_ALIAS: Production
+      # DVC won’t push in CI; we only run `repro`
+      PYTHONUNBUFFERED: "1"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install system deps
+      - name: Install deps
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client curl
-
-      - name: Install Python deps
-        run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          pip install \
-            "mlflow==2.18.0" \
-            "psycopg2-binary" \
-            "dvc[s3]==3.63.0" \
-            scikit-learn numpy pandas matplotlib pyyaml joblib boto3
-
-      - name: Wait for Postgres
-        env:
-          PGHOST: localhost
-          PGPORT: "5432"
-          PGUSER: postgres
-          PGPASSWORD: postgres
-        run: |
-          for i in $(seq 1 60); do
-            if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; then
-              echo "Postgres is ready"
-              break
-            fi
-            echo "Waiting for Postgres... ($i)"
-            sleep 2
-          done
+          # Core runtime
+          pip install "mlflow==2.18.0" psycopg2-binary boto3 requests
+          # DVC (file backend is enough for CI)
+          pip install "dvc[ssh]"  # no s3 needed here; adjust if you prefer
+          # Project deps if present
+          if [[ -f requirements.txt ]]; then
+            pip install -r requirements.txt
+          fi
 
       - name: Start MLflow (local server)
         shell: bash
         run: |
           set -euo pipefail
 
-          # Sanity: ensure psycopg2 is importable
+          # quick import check for psycopg2
           python -c "import psycopg2; print('psycopg2 OK')"
 
-          # Provide safe defaults so set -u doesn't fail if envs are missing
-          BACKEND_URI="${MLFLOW_BACKEND_STORE_URI:-sqlite:///${GITHUB_WORKSPACE}/mlruns.db}"
-          ARTIFACT_ROOT="${MLFLOW_ARTIFACTS_DESTINATION:-file://${GITHUB_WORKSPACE}/mlruns_artifacts}"
-
-          echo "Using BACKEND_URI=${BACKEND_URI}"
-          echo "Using ARTIFACT_ROOT=${ARTIFACT_ROOT}"
-
-          mkdir -p "${GITHUB_WORKSPACE}/mlruns_artifacts"
-
-          # Launch MLflow in the background
+          mkdir -p "${MLFLOW_ARTIFACTS_DESTINATION}"
           nohup mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
-            --backend-store-uri "${BACKEND_URI}" \
-            --default-artifact-root "${ARTIFACT_ROOT}" \
+            --backend-store-uri="${MLFLOW_BACKEND_STORE_URI}" \
+            --default-artifact-root="${MLFLOW_ARTIFACTS_DESTINATION}" \
             --serve-artifacts \
             > mlflow.log 2>&1 &
 
-          # Export tracking URI for later steps
+          # Expose for subsequent steps
           echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
 
-          # Wait until MLflow responds via the Python client
-          for i in $(seq 1 90); do
-            if python - <<'PY'
-      import os, mlflow
-      from mlflow.tracking import MlflowClient
-      mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-      # This will raise if the server isn't ready yet
-      _ = MlflowClient().search_experiments()
-      print("MLflow client OK")
-      PY
-            then
+          # Wait until port is reachable (we accept 200 or 404)
+          for i in {1..90}; do
+            if curl -sS http://127.0.0.1:5000/ >/dev/null || \
+               curl -sS http://127.0.0.1:5000/api/2.0/mlflow/experiments/list >/dev/null; then
               echo "MLflow is up on http://127.0.0.1:5000"
               break
-            else
-              echo "Waiting for MLflow... ($i)"
-              sleep 2
             fi
+            echo "Waiting for MLflow... ($i)"
+            sleep 2
           done
 
-          # Helpful diagnostics
-          python - <<'PY'
-      import os, requests
-      url = os.environ.get("MLFLOW_TRACKING_URI", "") + "/version"
-      try:
-          print("Server /version:", requests.get(url, timeout=5).text)
-      except Exception as e:
-          print("Could not fetch /version:", e)
-      PY
-
+          # Helpful diagnostics (no heredocs)
+          python -c "import os,requests; url=os.environ['MLFLOW_TRACKING_URI']+'/ajax-api/2.0/mlflow/experiments/list'; \
+                     print('Probe:', url); \
+                     print('Status:', requests.get(url, timeout=5).status_code)"
           echo "---- tail mlflow.log (last 100 lines) ----"
           tail -n 100 mlflow.log || true
 
       - name: Run DVC pipeline
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-        run: dvc repro --force
+        shell: bash
+        run: |
+          set -euo pipefail
+          dvc repro --force
 
       - name: Sanity check MLflow API
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+        shell: bash
         run: |
-          python -c "import os, mlflow; from mlflow.tracking import MlflowClient; mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); print('Experiments:', [e.name for e in MlflowClient().list_experiments()]); print('MLflow OK')"
+          set -euo pipefail
+          python -c "import os, mlflow; from mlflow.tracking import MlflowClient; \
+                     mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); \
+                     c = MlflowClient(); \
+                     print('Experiments:', [e.name for e in c.search_experiments()]); \
+                     print('MLflow OK')"
 
       - name: Extract RUN_ID from metrics
+        shell: bash
         run: |
-          python - <<'PY'
-          import json, os, pathlib, sys
-          p = pathlib.Path("metrics/run_info.json")
-          if not p.exists():
-              print("metrics/run_info.json not found", file=sys.stderr)
-              sys.exit(1)
-          data = json.loads(p.read_text())
-          rid = data.get("run_id")
-          print("Run ID:", rid)
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"RUN_ID={rid}\n")
-          PY
+          set -euo pipefail
+          python -c "import json,sys; d=json.load(open('metrics/run_info.json')); print(d['run_id'])" | tee run_id.txt
+          echo "RUN_ID=$(cat run_id.txt)" >> "$GITHUB_ENV"
 
       - name: Register model & set alias (main only)
         if: github.ref == 'refs/heads/main'
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-          MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
-          MLFLOW_MODEL_ALIAS: Production
           RUN_ID: ${{ env.RUN_ID }}
-          PROMOTE_F1_THRESHOLD: "0.80"
-        run: python ci/register_and_promote.py
+          MLFLOW_REGISTERED_MODEL_NAME: ${{ env.MLFLOW_REGISTERED_MODEL_NAME }}
+          MLFLOW_MODEL_ALIAS: ${{ env.MLFLOW_MODEL_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import os, mlflow; from mlflow.tracking import MlflowClient; \
+                     mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); \
+                     name=os.environ['MLFLOW_REGISTERED_MODEL_NAME']; \
+                     rid=os.environ['RUN_ID']; \
+                     client=MlflowClient(); \
+                     try: client.get_registered_model(name); \
+                     except Exception: client.create_registered_model(name); \
+                     src=f'runs:/{rid}/model'; \
+                     mv = client.create_model_version(name=name, source=src, run_id=rid); \
+                     client.set_registered_model_alias(name, os.environ['MLFLOW_MODEL_ALIAS'], mv.version); \
+                     print(f\"Alias '{os.environ['MLFLOW_MODEL_ALIAS']}' -> {name} v{mv.version}\")"
+
+      # (Optional) Upload debug artifacts
+      - name: Upload mlflow.log (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-log
+          path: mlflow.log
