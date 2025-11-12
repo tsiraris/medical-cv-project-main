@@ -1,0 +1,9 @@
+mlflow==2.18.0
+dvc[all]==3.51.2
+boto3
+scikit-learn==1.7.2
+numpy
+pandas
+matplotlib
+pyyaml
+joblib
