@@ -67,38 +67,54 @@ jobs:
           done
 
       - name: Start MLflow (local server)
+        shell: bash
         env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: postgres
           MLFLOW_BACKEND_STORE_URI: postgresql://postgres:postgres@localhost:5432/mlflow
           MLFLOW_ARTIFACTS_DESTINATION: file://${{ github.workspace }}/mlruns_artifacts
         run: |
           set -euo pipefail
 
-          # sanity: psycopg2 import
-          python -c "import psycopg2; print('psycopg2 OK')"
+          # Sanity: ensure psycopg2 works
+          python - <<'PY'
+          import psycopg2
+          print("psycopg2 OK")
+          PY
 
-          # start mlflow in background
+          # Launch MLflow in background
           nohup mlflow server \
             --host 127.0.0.1 \
             --port 5000 \
-            --backend-store-uri \"$MLFLOW_BACKEND_STORE_URI\" \
-            --default-artifact-root \"$MLFLOW_ARTIFACTS_DESTINATION\" \
+            --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
+            --default-artifact-root "${MLFLOW_ARTIFACTS_DESTINATION}" \
             --serve-artifacts \
             > mlflow.log 2>&1 &
 
-          # export tracking URI for later steps
           echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
 
-          # wait until Mlflow answers ML client calls
+          # Wait until MLflow responds
           for i in $(seq 1 90); do
-            python -c "import os, mlflow; from mlflow.tracking import MlflowClient; mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); MlflowClient().list_experiments(); print('MLflow client OK')" \
-              && break || true
-            echo 'Waiting for MLflow... ('$i')'
+            python - <<'PY'
+            import os, mlflow
+            from mlflow.tracking import MlflowClient
+            mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+            _ = MlflowClient().search_experiments()
+            print("MLflow client OK")
+            PY
+            rc=$?
+            if [ $rc -eq 0 ]; then
+              echo "MLflow is up on http://127.0.0.1:5000"
+              break
+            fi
+            echo "Waiting for MLflow... ($i)"
             sleep 2
           done
 
-          # debug info
           curl -sS http://127.0.0.1:5000/version || true
-          echo '---- tail mlflow.log (last 50 lines) ----'
+          echo "---- tail mlflow.log (last 50 lines) ----"
           tail -n 50 mlflow.log || true
 
       - name: Run DVC pipeline
@@ -114,7 +130,18 @@ jobs:
 
       - name: Extract RUN_ID from metrics
         run: |
-          python -c "import json, sys; d=json.load(open('metrics/run_info.json')); ri=d.get('run_id'); print('Run ID:', ri); open('$GITHUB_ENV','a').write(f'RUN_ID={ri}\n')"
+          python - <<'PY'
+          import json, os, pathlib, sys
+          p = pathlib.Path("metrics/run_info.json")
+          if not p.exists():
+              print("metrics/run_info.json not found", file=sys.stderr)
+              sys.exit(1)
+          data = json.loads(p.read_text())
+          rid = data.get("run_id")
+          print("Run ID:", rid)
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"RUN_ID={rid}\n")
+          PY
 
       - name: Register model & set alias (main only)
         if: github.ref == 'refs/heads/main'
