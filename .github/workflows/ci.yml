@@ -79,10 +79,7 @@ jobs:
           set -euo pipefail
 
           # Sanity: ensure psycopg2 works
-          python - <<'PY'
-          import psycopg2
-          print("psycopg2 OK")
-          PY
+          python -c "import psycopg2; print('psycopg2 OK')"
 
           # Launch MLflow in background
           nohup mlflow server \
@@ -95,22 +92,22 @@ jobs:
 
           echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
 
-          # Wait until MLflow responds
+          # Wait until MLflow responds by hitting its REST API via MlflowClient
           for i in $(seq 1 90); do
-            python - <<'PY'
-            import os, mlflow
-            from mlflow.tracking import MlflowClient
-            mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-            _ = MlflowClient().search_experiments()
-            print("MLflow client OK")
+            if python - <<'PY'
+              import os, mlflow
+              from mlflow.tracking import MlflowClient
+              mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+              MlflowClient().search_experiments()
+              print("MLflow client OK")
             PY
-            rc=$?
-            if [ $rc -eq 0 ]; then
+            then
               echo "MLflow is up on http://127.0.0.1:5000"
               break
+            else
+              echo "Waiting for MLflow... ($i)"
+              sleep 2
             fi
-            echo "Waiting for MLflow... ($i)"
-            sleep 2
           done
 
           curl -sS http://127.0.0.1:5000/version || true
