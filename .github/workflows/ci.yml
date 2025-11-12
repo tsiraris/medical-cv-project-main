@@ -25,13 +25,10 @@ jobs:
           --health-retries 20
 
     env:
-      # MLflow (file artifacts in CI to avoid MinIO)
       MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@localhost:5432/mlflow
       MLFLOW_ARTIFACTS_DESTINATION: file:${{ github.workspace }}/mlruns
-      # Model naming
       MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
       MLFLOW_MODEL_ALIAS: Production
-      # DVC won’t push in CI; we only run `repro`
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -48,11 +45,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          # Core runtime
           pip install "mlflow==2.18.0" psycopg2-binary boto3 requests
-          # DVC (file backend is enough for CI)
-          pip install "dvc[ssh]"  # no s3 needed here; adjust if you prefer
-          # Project deps if present
+          pip install dvc  # file backend is enough in CI
           if [[ -f requirements.txt ]]; then
             pip install -r requirements.txt
           fi
@@ -62,7 +56,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # quick import check for psycopg2
           python -c "import psycopg2; print('psycopg2 OK')"
 
           mkdir -p "${MLFLOW_ARTIFACTS_DESTINATION}"
@@ -74,24 +67,24 @@ jobs:
             --serve-artifacts \
             > mlflow.log 2>&1 &
 
-          # Expose for subsequent steps
-          echo "MLFLOW_TRACKING_URI=http://127.0.0.1:5000" >> "$GITHUB_ENV"
+          # Make it available both now (this step) and later (other steps)
+          export MLFLOW_TRACKING_URI="http://127.0.0.1:5000"
+          echo "MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}" >> "$GITHUB_ENV"
 
-          # Wait until port is reachable (we accept 200 or 404)
+          # Wait until MLflow is reachable (200/404 both OK)
           for i in {1..90}; do
-            if curl -sS http://127.0.0.1:5000/ >/dev/null || \
-               curl -sS http://127.0.0.1:5000/api/2.0/mlflow/experiments/list >/dev/null; then
-              echo "MLflow is up on http://127.0.0.1:5000"
+            if curl -sS "${MLFLOW_TRACKING_URI}/" >/dev/null || \
+               curl -sS "${MLFLOW_TRACKING_URI}/api/2.0/mlflow/experiments/list" >/dev/null; then
+              echo "MLflow is up on ${MLFLOW_TRACKING_URI}"
               break
             fi
-            echo "Waiting for MLflow... ($i)"
+            echo "Waiting for MLflow... (${i})"
             sleep 2
           done
 
-          # Helpful diagnostics (no heredocs)
-          python -c "import os,requests; url=os.environ['MLFLOW_TRACKING_URI']+'/ajax-api/2.0/mlflow/experiments/list'; \
-                     print('Probe:', url); \
-                     print('Status:', requests.get(url, timeout=5).status_code)"
+          # Diagnostics
+          python -c "import os,requests; u=os.environ['MLFLOW_TRACKING_URI']+'/ajax-api/2.0/mlflow/experiments/list'; \
+                     print('Probe:', u); print('Status:', requests.get(u, timeout=5).status_code)"
           echo "---- tail mlflow.log (last 100 lines) ----"
           tail -n 100 mlflow.log || true
 
@@ -119,7 +112,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -c "import json,sys; d=json.load(open('metrics/run_info.json')); print(d['run_id'])" | tee run_id.txt
+          python -c "import json; print(json.load(open('metrics/run_info.json'))['run_id'])" | tee run_id.txt
           echo "RUN_ID=$(cat run_id.txt)" >> "$GITHUB_ENV"
 
       - name: Register model & set alias (main only)
@@ -137,14 +130,13 @@ jobs:
                      name=os.environ['MLFLOW_REGISTERED_MODEL_NAME']; \
                      rid=os.environ['RUN_ID']; \
                      client=MlflowClient(); \
-                     try: client.get_registered_model(name); \
-                     except Exception: client.create_registered_model(name); \
+                     try: client.get_registered_model(name) \
+                     except Exception: client.create_registered_model(name) \
                      src=f'runs:/{rid}/model'; \
                      mv = client.create_model_version(name=name, source=src, run_id=rid); \
                      client.set_registered_model_alias(name, os.environ['MLFLOW_MODEL_ALIAS'], mv.version); \
                      print(f\"Alias '{os.environ['MLFLOW_MODEL_ALIAS']}' -> {name} v{mv.version}\")"
 
-      # (Optional) Upload debug artifacts
       - name: Upload mlflow.log (debug)
         if: always()
         uses: actions/upload-artifact@v4
