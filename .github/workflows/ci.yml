@@ -126,16 +126,16 @@ jobs:
         run: |
           set -euo pipefail
           python -c "import os, mlflow; from mlflow.tracking import MlflowClient; \
-            mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); \
-            name=os.environ['MLFLOW_REGISTERED_MODEL_NAME']; \
-            rid=os.environ['RUN_ID']; \
-            client=MlflowClient(); \
-            try: client.get_registered_model(name); \
-            except Exception: client.create_registered_model(name); \
-            src=f'runs:/{rid}/model'; \
-            mv=client.create_model_version(name=name, source=src, run_id=rid); \
-            client.set_registered_model_alias(name, os.environ['MLFLOW_MODEL_ALIAS'], mv.version); \
-            print(f\"Alias '{os.environ['MLFLOW_MODEL_ALIAS']}' -> {name}-v{mv.version}\")"
+                    mlflow.set_tracking_uri(os.environ['MLFLOW_TRACKING_URI']); \
+                    name=os.environ['MLFLOW_REGISTERED_MODEL_NAME']; \
+                    rid=os.environ['RUN_ID']; \
+                    client=MlflowClient(); \
+                    try: client.get_registered_model(name); \
+                    except Exception: client.create_registered_model(name); \
+                    src=f'runs:/{rid}/model'; \
+                    mv=client.create_model_version(name=name, source=src, run_id=rid); \
+                    client.set_registered_model_alias(name, os.environ['MLFLOW_MODEL_ALIAS'], mv.version); \
+                    print(f\"Alias '{os.environ['MLFLOW_MODEL_ALIAS']}' -> {name}-v{mv.version}\")"
 
       - name: Upload mlflow.log (debug)
         if: always()
