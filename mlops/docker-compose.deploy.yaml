@@ -1,0 +1,22 @@
+
+services:
+  app:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes: [ "..:/app" ]
+    environment:
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI}
+      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      MLFLOW_REGISTERED_MODEL_NAME: ${MLFLOW_REGISTERED_MODEL_NAME:-cxr-demo}
+      MLFLOW_MODEL_ALIAS: ${MLFLOW_MODEL_ALIAS:-Production}
+      PYTHONUNBUFFERED: "1"
+    command: >
+      sh -c "
+      pip install --no-cache-dir --upgrade pip &&
+      pip install --no-cache-dir uvicorn fastapi pydantic 'mlflow==2.18.0' boto3 gunicorn &&
+      gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 --timeout 60
+      "
+    ports: [ "8000:8000" ]

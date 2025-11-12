@@ -1,25 +1,63 @@
-name: train-and-check
+name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main", "develop" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main", "develop" ]
 
 jobs:
-  ci:
+  build-test-register:
     runs-on: ubuntu-latest
-    env:
-      # CI-safe MLflow: no server
-      MLFLOW_TRACKING_URI: "file:./mlruns"
-      MLFLOW_EXPERIMENT_NAME: "ci-demo"
-      MLFLOW_REGISTERED_MODEL_NAME: "cxr-demo"  # ignored on file backend
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: mlflow
+          POSTGRES_USER: mlflow
+          POSTGRES_DB: mlflow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd="pg_isready -U mlflow -d mlflow"
+          --health-interval=5s --health-timeout=3s --health-retries=10
+
+      minio:
+        image: minio/minio:latest
+        ports: ["9000:9000", "9001:9001"]
+        env:
+          MINIO_ROOT_USER: minio
+          MINIO_ROOT_PASSWORD: minio123
+        options: >-
+          --health-cmd="curl -fsS http://localhost:9000/minio/health/ready || exit 1"
+          --health-interval=5s --health-timeout=3s --health-retries=20
+        command: server /data --console-address ":9001"
+
+      mlflow:
+        image: python:3.11-slim
+        ports: ["5000:5000"]
+        env:
+          MLFLOW_BACKEND_STORE_URI: postgresql://mlflow:mlflow@postgres:5432/mlflow
+          MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: minio123
+          AWS_DEFAULT_REGION: us-east-1
+        options: >-
+          --health-cmd="curl -fsS http://localhost:5000/api/2.0/mlflow/experiments/list > /dev/null || exit 1"
+          --health-interval=5s --health-timeout=5s --health-retries=60
+        command: >-
+          sh -c "pip install --no-cache-dir mlflow==2.18.0 boto3 psycopg2-binary &&
+                 mlflow server
+                   --host=0.0.0.0
+                   --port=5000
+                   --backend-store-uri=$MLFLOW_BACKEND_STORE_URI
+                   --default-artifact-root='s3://mlflow/'
+                   --serve-artifacts"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -27,44 +65,51 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install "mlflow>=2.16,<3" "dvc[s3]>=3,<4" scikit-learn numpy pandas matplotlib boto3 pyyaml joblib
-          if [ -f "pyproject.toml" ] || [ -f "setup.cfg" ]; then pip install -e .; fi
+          pip install -r requirements.txt dvc[all]==3.51.2 mlflow==2.18.0 boto3 awscli
 
-      - name: Reproduce pipeline (DVC)
-        run: dvc repro
-
-      - name: Show metrics produced in CI
+      - name: Create MinIO bucket (mlflow)
+        env:
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: minio123
         run: |
-          echo "---- metrics/val.json ----"
-          cat metrics/val.json || true
-          echo "--------------------------"
+          aws --endpoint-url http://localhost:9000 s3 mb s3://mlflow || true
+          aws --endpoint-url http://localhost:9000 s3 ls
 
+      # Reproducibility: run your pipeline (file backend keeps CI fast & hermetic)
+      - name: DVC repro (file backend)
+        env:
+          MLFLOW_TRACKING_URI: file:./mlruns
+        run: dvc repro --force
+
+      # Your quality gate (already in repo)
       - name: Quality gate
         run: python ci/quality_gate.py
 
-      - name: Upload metrics & model (local copy)
-        uses: actions/upload-artifact@v4
-        with:
-          name: model-and-metrics
-          path: |
-            metrics/val.json
-            models/model.joblib
-      
+      # Register latest run to the MLflow service in this job (only on main)
       - name: Register model & set alias (main only)
         if: github.ref == 'refs/heads/main'
         env:
-          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-          MLFLOW_S3_ENDPOINT_URL: ${{ secrets.MLFLOW_S3_ENDPOINT_URL }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          MLFLOW_TRACKING_URI: http://localhost:5000
+          MLFLOW_S3_ENDPOINT_URL: http://localhost:9000
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: minio123
           AWS_DEFAULT_REGION: us-east-1
           MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
           TARGET_ALIAS: Production
         run: |
           python - <<'PY'
-          import json, os
+          import os, json
           from pathlib import Path
           ri = json.loads(Path("metrics/run_info.json").read_text())
           os.environ["RUN_ID"] = ri["run_id"]
           PY
           python ci/register_and_promote.py
+
+      - name: Upload run artifacts (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-run
+          path: |
+            metrics/val.json
+            metrics/run_info.json
+            models/model.joblib
