@@ -1,4 +1,3 @@
-# ci/register_and_promote.py
 """
 Register a model version for a given MLflow run and set an alias (e.g., Production).
 Env:
@@ -71,6 +70,78 @@ def main():
         description=f"Auto-registered from run {run_id}",
     )
     print(f"[registry] Created model version v{mv.version} for '{model_name}'")
+
+    # ------------------------------------------------------------------
+    # Attach rich metadata to the model version (params, metrics, git)
+    # ------------------------------------------------------------------
+    # Copy params and metrics from the run so they are visible on the registered model version as tags.
+    try:
+        params = run.data.params or {}
+        metrics = run.data.metrics or {}
+        for key, value in params.items():
+            client.set_model_version_tag(
+                name=model_name,
+                version=mv.version,
+                key=f"param.{key}",
+                value=str(value),
+            )
+        for key, value in metrics.items():
+            client.set_model_version_tag(
+                name=model_name,
+                version=mv.version,
+                key=f"metric.{key}",
+                value=str(value),
+            )
+        print(
+            f"[registry] Copied {len(params)} params and {len(metrics)} metrics to model version tags"
+        )
+    except Exception as e:
+        print(
+            f"[registry] Warning: could not copy run params/metrics to model tags: {e}"
+        )
+
+    # Attach Git / CI provenance if available
+    commit_sha = os.getenv("GIT_COMMIT_SHA") or os.getenv("GITHUB_SHA")
+    branch = (
+        os.getenv("GIT_BRANCH")
+        or os.getenv("GITHUB_REF_NAME")
+        or os.getenv("GITHUB_REF")
+    )
+    pr_number = os.getenv("GITHUB_PR_NUMBER")
+
+    try:
+        if commit_sha:
+            client.set_model_version_tag(
+                name=model_name,
+                version=mv.version,
+                key="git.commit_sha",
+                value=commit_sha,
+            )
+        if branch:
+            client.set_model_version_tag(
+                name=model_name,
+                version=mv.version,
+                key="git.branch",
+                value=branch,
+            )
+        if pr_number:
+            client.set_model_version_tag(
+                name=model_name,
+                version=mv.version,
+                key="git.pr_number",
+                value=str(pr_number),
+            )
+
+        # Always store the originating run id as a tag too
+        client.set_model_version_tag(
+            name=model_name,
+            version=mv.version,
+            key="mlflow.run_id",
+            value=run_id,
+        )
+        print("[registry] Attached git / CI metadata tags to model version")
+    except Exception as e:
+        print(f"[registry] Warning: could not attach git/CI metadata: {e}")
 
     # Gate by F1 (if present)
     promote = True
