@@ -32,7 +32,7 @@ def main():
     target_alias = os.getenv("TARGET_ALIAS", "Production")
     target_stage = os.getenv("TARGET_STAGE")  # fallback path
     metrics_path = Path(os.getenv("METRICS_PATH", "metrics/val.json"))
-    f1_threshold = float(os.getenv("PROMOTE_F1_THRESHOLD", "0.0"))
+    f1_threshold = float(os.getenv("PROMOTE_F1_THRESHOLD", "0.80"))
 
     run_id = os.getenv("RUN_ID")
     if not run_id:
@@ -74,7 +74,8 @@ def main():
     # ------------------------------------------------------------------
     # Attach rich metadata to the model version (params, metrics, git)
     # ------------------------------------------------------------------
-    # Copy params and metrics from the run so they are visible on the registered model version as tags.
+    # Copy params and metrics from the run so they are visible on
+    # the registered model version as tags.
     try:
         params = run.data.params or {}
         metrics = run.data.metrics or {}
@@ -93,11 +94,13 @@ def main():
                 value=str(value),
             )
         print(
-            f"[registry] Copied {len(params)} params and {len(metrics)} metrics to model version tags"
+            f"[registry] Copied {len(params)} params and {len(metrics)} "
+            "metrics to model version tags"
         )
     except Exception as e:
         print(
-            f"[registry] Warning: could not copy run params/metrics to model tags: {e}"
+            f"[registry] Warning: could not copy run params/metrics "
+            f"to model tags: {e}"
         )
 
     # Attach Git / CI provenance if available
@@ -143,20 +146,74 @@ def main():
     except Exception as e:
         print(f"[registry] Warning: could not attach git/CI metadata: {e}")
 
-    # Gate by F1 (if present)
-    promote = True
+    # ------------------------------------------------------------------
+    # Decide whether to promote this model
+    # ------------------------------------------------------------------
+    # 1) New model F1 from metrics file
+    new_f1 = None
     if metrics_path.exists():
         try:
             m = json.loads(metrics_path.read_text(encoding="utf-8"))
-            f1 = float(m.get("f1")) if m.get("f1") is not None else None
-            print(f"[registry] Metrics: f1={f1} (threshold={f1_threshold})")
-            if f1 is not None and f1 < f1_threshold:
-                print(f"[registry] Below threshold; not updating alias.")
-                promote = False
+            if m.get("f1") is not None:
+                new_f1 = float(m["f1"])
+            print(
+                f"[registry] New model metrics: f1={new_f1} "
+                f"(threshold={f1_threshold})"
+            )
         except Exception as e:
             print(f"[registry] Warning: could not read metrics: {e}")
 
+    # 2) Current alias F1 (if alias already exists and has metric.f1 tag)
+    current_f1 = None
+    current_alias_version = None
+    try:
+        current_mv = client.get_model_version_by_alias(
+            name=model_name, alias=target_alias
+        )
+        current_alias_version = current_mv.version
+        tag_f1 = (current_mv.tags or {}).get("metric.f1")
+        if tag_f1 is not None:
+            current_f1 = float(tag_f1)
+        print(
+            f"[registry] Current alias '{target_alias}' -> v{current_alias_version}, "
+            f"metric.f1={current_f1}"
+        )
+    except MlflowException:
+        # No alias yet – this is the first production candidate.
+        print(
+            f"[registry] No existing alias '{target_alias}' found; "
+            "will treat this as the first candidate."
+        )
+
+    # 3) Promotion rules:
+    #    - If new_f1 is present and below threshold -> no promotion.
+    #    - If both current_f1 and new_f1 present and new_f1 < current_f1 -> no promotion.
+    promote = True
+
+    if new_f1 is not None and new_f1 < f1_threshold:
+        print(
+            "[registry] New model below F1 threshold; "
+            "will NOT update alias."
+        )
+        promote = False
+
+    if (
+        promote
+        and current_f1 is not None
+        and new_f1 is not None
+        and new_f1 < current_f1
+    ):
+        print(
+            "[registry] New model F1 is worse than current alias "
+            f"({new_f1} < {current_f1}); will NOT update alias."
+        )
+        promote = False
+
     if not promote:
+        print(
+            f"[registry] Keeping alias '{target_alias}' on "
+            f"version {current_alias_version} (if it existed)."
+        )
         return
 
     # Preferred: assign alias
