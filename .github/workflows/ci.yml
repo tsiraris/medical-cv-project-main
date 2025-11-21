@@ -115,23 +115,25 @@ jobs:
           python -c "import json; print(json.load(open('metrics/run_info.json'))['run_id'])" | tee run_id.txt
           echo "RUN_ID=$(cat run_id.txt)" >> "$GITHUB_ENV"
 
-      - name: Register & promote model (main only)
+      - name: Register candidate & maybe promote (main only)
         if: github.ref == 'refs/heads/main'
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
           RUN_ID: ${{ env.RUN_ID }}
           MLFLOW_REGISTERED_MODEL_NAME: ${{ env.MLFLOW_REGISTERED_MODEL_NAME }}
-          TARGET_ALIAS: ${{ env.MLFLOW_MODEL_ALIAS }}
+          TARGET_ALIAS: ${{ env.MLFLOW_MODEL_ALIAS }}      # "Production"
+          CANDIDATE_ALIAS: Candidate
           METRICS_PATH: metrics/val.json
-          PROMOTE_F1_THRESHOLD: "0.0"
+          PROMOTE_F1_THRESHOLD: "0.0"                      # tighten later if you want
           GIT_COMMIT_SHA: ${{ github.sha }}
           GIT_BRANCH: ${{ github.ref_name }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         shell: bash
         run: |
           set -euo pipefail
-          echo "Registering model and setting alias via ci/register_and_promote.py..."
+          echo "Registering model, setting Candidate alias, and maybe promoting to Production..."
           python ci/register_and_promote.py
+
 
       - name: Upload mlflow.log (debug)
         if: always()
