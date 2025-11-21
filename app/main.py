@@ -48,6 +48,13 @@ def healthz():
 def version():
     return {"model": model_short_sha(), "build_rev": BUILD_REV}
 
+@app.get("/model-info")
+def model_info():
+    return {
+        "alias": os.getenv("MLFLOW_MODEL_ALIAS", "unknown"),
+        "model_short_sha": model_short_sha(),
+    }
+
 @app.post("/predict")
 def predict(req: PredictRequest):
     try:

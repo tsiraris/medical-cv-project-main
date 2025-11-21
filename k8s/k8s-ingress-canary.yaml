@@ -1,10 +1,12 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: medical-cv-serve
+  name: medical-cv-serve-canary
   namespace: ml
   annotations:
     kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "10"
 spec:
   ingressClassName: nginx
   rules:
@@ -15,6 +17,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: medical-cv-serve
+                name: medical-cv-serve-canary
                 port:
                   number: 80
