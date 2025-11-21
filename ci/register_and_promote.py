@@ -1,68 +1,99 @@
+# ci/register_and_promote.py
 """
-Register a model version for a given MLflow run and set an alias (e.g., Production).
+Register a model version for a given MLflow run, always set a Candidate alias,
+and conditionally promote to a target alias (e.g. Production).
+
 Env:
-  MLFLOW_TRACKING_URI=http://localhost:5500
-  MLFLOW_S3_ENDPOINT_URL=http://localhost:9000
-  AWS_ACCESS_KEY_ID=minio
-  AWS_SECRET_ACCESS_KEY=minio123
-  AWS_DEFAULT_REGION=us-east-1
+  MLFLOW_TRACKING_URI=http://127.0.0.1:5000
   MLFLOW_REGISTERED_MODEL_NAME=cxr-demo
+
   RUN_ID=<run id>  # if not set, will try metrics/run_info.json
   METRICS_PATH=metrics/val.json
+
+  # Aliases
+  CANDIDATE_ALIAS=Candidate
   TARGET_ALIAS=Production
-  PROMOTE_F1_THRESHOLD=0.80
-  # Optional fallback:
-  TARGET_STAGE=Production
+
+  # Promotion rules
+  PROMOTE_F1_THRESHOLD=0.80        # minimum f1 required to promote
+  TARGET_STAGE=Production          # optional: also set MLflow stage
+
+  # Optional git / CI metadata (set by the workflow):
+  GIT_COMMIT_SHA
+  GIT_BRANCH
+  GITHUB_PR_NUMBER
 """
 
-import os
 import json
+import os
 from pathlib import Path
+
 import mlflow
 from mlflow.tracking import MlflowClient
 from mlflow.exceptions import MlflowException
 
 
-def main():
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5500")
+def _load_run_id() -> str:
+    run_id = os.getenv("RUN_ID")
+    if run_id:
+        print(f"[registry] Using RUN_ID from env: {run_id}")
+        return run_id
+
+    info_path = Path("metrics/run_info.json")
+    if info_path.exists():
+        try:
+            data = json.loads(info_path.read_text(encoding="utf-8"))
+            run_id = data.get("run_id")
+            if run_id:
+                print(f"[registry] Using RUN_ID from {info_path}")
+                return run_id
+        except Exception as e:
+            print(f"[registry] Warning: could not read {info_path}: {e}")
+
+    raise SystemExit(
+        "[registry] ERROR: RUN_ID not set and metrics/run_info.json not usable"
+    )
+
+
+def main() -> None:
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
     mlflow.set_tracking_uri(tracking_uri)
     client = MlflowClient()
 
     model_name = os.getenv("MLFLOW_REGISTERED_MODEL_NAME", "cxr-demo")
     target_alias = os.getenv("TARGET_ALIAS", "Production")
-    target_stage = os.getenv("TARGET_STAGE")  # fallback path
+    candidate_alias = os.getenv("CANDIDATE_ALIAS", "Candidate")
+    target_stage = os.getenv("TARGET_STAGE")  # optional, may be empty
+
     metrics_path = Path(os.getenv("METRICS_PATH", "metrics/val.json"))
-    f1_threshold = float(os.getenv("PROMOTE_F1_THRESHOLD", "0.80"))
+    try:
+        f1_threshold = float(os.getenv("PROMOTE_F1_THRESHOLD", "0.0"))
+    except ValueError:
+        f1_threshold = 0.0
 
-    run_id = os.getenv("RUN_ID")
-    if not run_id:
-        # fallback to metrics/run_info.json
-        run_info_path = Path("metrics/run_info.json")
-        if run_info_path.exists():
-            with open(run_info_path, "r", encoding="utf-8") as f:
-                ri = json.load(f)
-            run_id = ri.get("run_id")
-    if not run_id:
-        print("RUN_ID not set and metrics/run_info.json missing—nothing to register.")
-        return
+    run_id = _load_run_id()
 
-    print(f"[registry] Using tracking URI: {tracking_uri}")
+    print(f"[registry] Tracking URI: {tracking_uri}")
     print(f"[registry] Model name: {model_name}")
-    print(f"[registry] Run id: {run_id}")
+    print(f"[registry] Target alias: {target_alias}")
+    print(f"[registry] Candidate alias: {candidate_alias}")
+    print(f"[registry] F1 threshold: {f1_threshold}")
 
-    # Make sure the registered model exists
+    # Ensure registered model exists
     try:
         client.get_registered_model(model_name)
+        print(f"[registry] Registered model '{model_name}' already exists")
     except MlflowException:
         client.create_registered_model(model_name)
         print(f"[registry] Created registered model '{model_name}'")
 
-    # Resolve source from the run's artifact URI (robust, no hardcoding)
+    # ------------------------------------------------------------------
+    # Create a new model version from the run
+    # ------------------------------------------------------------------
     run = client.get_run(run_id)
     source = f"{run.info.artifact_uri}/model"
     print(f"[registry] Source: {source}")
 
-    # Create model version
     mv = client.create_model_version(
         name=model_name,
         source=source,
@@ -72,13 +103,12 @@ def main():
     print(f"[registry] Created model version v{mv.version} for '{model_name}'")
 
     # ------------------------------------------------------------------
-    # Attach rich metadata to the model version (params, metrics, git)
+    # Attach rich metadata as tags
     # ------------------------------------------------------------------
-    # Copy params and metrics from the run so they are visible on
-    # the registered model version as tags.
     try:
         params = run.data.params or {}
         metrics = run.data.metrics or {}
+
         for key, value in params.items():
             client.set_model_version_tag(
                 name=model_name,
@@ -93,17 +123,15 @@ def main():
                 key=f"metric.{key}",
                 value=str(value),
             )
+
         print(
-            f"[registry] Copied {len(params)} params and {len(metrics)} "
-            "metrics to model version tags"
+            f"[registry] Copied {len(params)} params and "
+            f"{len(metrics)} metrics to tags"
         )
     except Exception as e:
-        print(
-            f"[registry] Warning: could not copy run params/metrics "
-            f"to model tags: {e}"
-        )
+        print(f"[registry] Warning: could not tag params/metrics: {e}")
 
-    # Attach Git / CI provenance if available
+    # Git / CI provenance
     commit_sha = os.getenv("GIT_COMMIT_SHA") or os.getenv("GITHUB_SHA")
     branch = (
         os.getenv("GIT_BRANCH")
@@ -135,21 +163,36 @@ def main():
                 value=str(pr_number),
             )
 
-        # Always store the originating run id as a tag too
         client.set_model_version_tag(
             name=model_name,
             version=mv.version,
             key="mlflow.run_id",
             value=run_id,
         )
-        print("[registry] Attached git / CI metadata tags to model version")
+        print("[registry] Attached git/CI metadata tags")
     except Exception as e:
-        print(f"[registry] Warning: could not attach git/CI metadata: {e}")
+        print(f"[registry] Warning: could not tag git/CI metadata: {e}")
 
     # ------------------------------------------------------------------
-    # Decide whether to promote this model
+    # Always set Candidate alias to this new version
     # ------------------------------------------------------------------
-    # 1) New model F1 from metrics file
+    if candidate_alias:
+        try:
+            client.set_registered_model_alias(
+                name=model_name,
+                alias=candidate_alias,
+                version=mv.version,
+            )
+            print(
+                f"[registry] Alias '{candidate_alias}' now points to "
+                f"{model_name} v{mv.version}"
+            )
+        except Exception as e:
+            print(f"[registry] Warning: could not set candidate alias: {e}")
+
+    # ------------------------------------------------------------------
+    # Decide whether to promote to target alias (Production)
+    # ------------------------------------------------------------------
     new_f1 = None
     if metrics_path.exists():
         try:
@@ -162,13 +205,15 @@ def main():
             )
         except Exception as e:
             print(f"[registry] Warning: could not read metrics: {e}")
+    else:
+        print(f"[registry] Metrics file not found at {metrics_path}")
 
-    # 2) Current alias F1 (if alias already exists and has metric.f1 tag)
     current_f1 = None
     current_alias_version = None
     try:
         current_mv = client.get_model_version_by_alias(
-            name=model_name, alias=target_alias
+            name=model_name,
+            alias=target_alias,
         )
         current_alias_version = current_mv.version
         tag_f1 = (current_mv.tags or {}).get("metric.f1")
@@ -179,21 +224,17 @@ def main():
             f"metric.f1={current_f1}"
         )
     except MlflowException:
-        # No alias yet – this is the first production candidate.
         print(
             f"[registry] No existing alias '{target_alias}' found; "
-            "will treat this as the first candidate."
+            "treating this as first candidate for that alias."
         )
 
-    # 3) Promotion rules:
-    #    - If new_f1 is present and below threshold -> no promotion.
-    #    - If both current_f1 and new_f1 present and new_f1 < current_f1 -> no promotion.
     promote = True
 
     if new_f1 is not None and new_f1 < f1_threshold:
         print(
             "[registry] New model below F1 threshold; "
-            "will NOT update alias."
+            "will NOT update production alias."
         )
         promote = False
 
@@ -204,7 +245,7 @@ def main():
         and new_f1 < current_f1
     ):
         print(
-            "[registry] New model F1 is worse than current alias "
+            "[registry] New model F1 is worse than current production "
             f"({new_f1} < {current_f1}); will NOT update alias."
         )
         promote = False
@@ -216,26 +257,33 @@ def main():
         )
         return
 
-    # Preferred: assign alias
+    # ------------------------------------------------------------------
+    # Promote: move Production alias (and optionally stage)
+    # ------------------------------------------------------------------
     try:
         client.set_registered_model_alias(
-            name=model_name, alias=target_alias, version=mv.version
+            name=model_name,
+            alias=target_alias,
+            version=mv.version,
         )
-        print(f"[registry] Alias '{target_alias}' -> '{model_name}' v{mv.version}")
+        print(
+            f"[registry] Alias '{target_alias}' now points to "
+            f"{model_name} v{mv.version}"
+        )
     except Exception as e:
-        print(f"[registry] Alias not supported/failed: {e}")
-        # Fallback to stage transition if requested
-        if target_stage:
-            try:
-                client.transition_model_version_stage(
-                    name=model_name,
-                    version=mv.version,
-                    stage=target_stage,
-                    archive_existing_versions=True,
-                )
-                print(f"[registry] (fallback) Transitioned to stage '{target_stage}'")
-            except Exception as e2:
-                print(f"[registry] Stage transition failed: {e2}")
+        print(f"[registry] ERROR: could not set target alias: {e}")
+
+    if target_stage:
+        try:
+            client.transition_model_version_stage(
+                name=model_name,
+                version=mv.version,
+                stage=target_stage,
+                archive_existing_versions=True,
+            )
+            print(f"[registry] Transitioned to stage '{target_stage}'")
+        except Exception as e2:
+            print(f"[registry] Stage transition failed: {e2}")
 
 
 if __name__ == "__main__":
