@@ -14,6 +14,14 @@ import urllib.parse
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
 
+# Optional ONNX export (for KServe)
+try:
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+    HAVE_SKL2ONNX = True
+except Exception:
+    HAVE_SKL2ONNX = False
+
 import mlflow
 import mlflow.sklearn
 from mlflow.models.signature import infer_signature
@@ -139,6 +147,38 @@ if __name__ == "__main__":
             registered_model_name=reg_name,
         )
         print(f"[train] model logged via: {how}")
+
+        # ------------------------------------------------------------------
+        # Optional: export ONNX model for KServe and tag storage URI
+        # ------------------------------------------------------------------
+        if HAVE_SKL2ONNX:
+            try:
+                n_features = Xtr.shape[1]
+                initial_types = [("input", FloatTensorType([None, n_features]))]
+
+                onnx_model = convert_sklearn(clf, initial_types=initial_types)
+
+                onnx_dir = Path("tmp_artifacts") / "onnx"
+                onnx_dir.mkdir(parents=True, exist_ok=True)
+                onnx_path = onnx_dir / "model.onnx"
+                with open(onnx_path, "wb") as f:
+                    f.write(onnx_model.SerializeToString())
+
+                # Log ONNX file under "onnx" sub-artifact
+                mlflow.log_artifact(str(onnx_path), artifact_path="onnx")
+
+                # This is the URI KServe can use as storageUri
+                onnx_storage_uri = f"{run.info.artifact_uri}/onnx/model.onnx"
+                mlflow.set_tag("deploy.storage_uri", onnx_storage_uri)
+
+                print(
+                    f"[train] Exported ONNX model to {onnx_path} and "
+                    f"logged artifact. storageUri={onnx_storage_uri}"
+                )
+            except Exception as e:
+                print(f"[train] Warning: could not export/log ONNX model: {e}")
+        else:
+            print("[train] skl2onnx not available; skipping ONNX export")
 
         # Emit metrics file for DVC & CI gate
         ensure_dir("metrics")

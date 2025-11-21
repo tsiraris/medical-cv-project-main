@@ -108,6 +108,7 @@ def main() -> None:
     try:
         params = run.data.params or {}
         metrics = run.data.metrics or {}
+        tags = run.data.tags or {}
 
         for key, value in params.items():
             client.set_model_version_tag(
@@ -124,10 +125,22 @@ def main() -> None:
                 value=str(value),
             )
 
+        # Propagate deploy.storage_uri from the run (for KServe)
+        deploy_uri = tags.get("deploy.storage_uri")
+        if deploy_uri:
+            client.set_model_version_tag(
+                name=model_name,
+                version=mv.version,
+                key="deploy.storage_uri",
+                value=deploy_uri,
+            )
+            print(f"[registry] Attached deploy.storage_uri={deploy_uri}")
+
         print(
             f"[registry] Copied {len(params)} params and "
             f"{len(metrics)} metrics to tags"
         )
+
     except Exception as e:
         print(f"[registry] Warning: could not tag params/metrics: {e}")
 

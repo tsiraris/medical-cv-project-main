@@ -7,3 +7,5 @@ pandas
 matplotlib
 pyyaml
 joblib
+skl2onnx
+onnxruntime
