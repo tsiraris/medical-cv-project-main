@@ -1,0 +1,14 @@
+# k8s/k8s-service-canary.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: medical-cv-serve-canary
+  namespace: ml
+spec:
+  type: ClusterIP
+  selector:
+    app: medical-cv-serve-canary
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
