@@ -3,70 +3,105 @@ from pydantic import BaseModel, Field
 from typing import List
 import os
 
-# Registry-aware loader: pulls latest <MODEL_NAME>@<STAGE> from MLflow
-# and caches it internally. No args required.
+from app.metrics import (
+    metrics_middleware,
+    metrics_endpoint,
+    INFERENCE_LATENCY_SECONDS,
+)
 from app.model_io import load_model, predict_batch, model_short_sha
+
+# Build / deployment metadata
+BUILD_REV = os.getenv("BUILD_REV", "local")
+MODEL_ALIAS = os.getenv("MLFLOW_MODEL_ALIAS", "unknown")
+
+
+# ------------------------------------------------------------------------------
+# FastAPI app
+# ------------------------------------------------------------------------------
 
 app = FastAPI(title="medical-cv-serve-baseline", version="0.0.1")
 
+# Wrap the app with the Prometheus metrics middleware
+app.middleware("http")(metrics_middleware(app))
+
+
+# ------------------------------------------------------------------------------
+# Request / response models
+# ------------------------------------------------------------------------------
+
 class Features(BaseModel):
-    f1: float = Field(...)
-    f2: float = Field(...)
-    f3: float = Field(...)
-    f4: float = Field(...)
+    f1: float = Field(..., description="Feature 1")
+    f2: float = Field(..., description="Feature 2")
+    f3: float = Field(..., description="Feature 3")
+    f4: float = Field(..., description="Feature 4")
+
 
 class PredictRequest(BaseModel):
     items: List[Features]
 
-BUILD_REV = os.getenv("BUILD_REV", "local")
 
-@app.on_event("startup")
-def _startup():
-    try:
-        load_model()
-    except Exception as e:
-        print(f"[startup] Model not loaded yet: {e}")
+# ------------------------------------------------------------------------------
+# Endpoints
+# ------------------------------------------------------------------------------
 
-@app.get("/live")
-def live():
-    return {"status": "alive"}
-
-@app.get("/ready")
-def ready():
-    # ok when model is loaded
-    return {"ready": model_short_sha() != "unloaded"}
-
-@app.get("/healthz")
-def healthz():
+@app.get("/")
+def root():
     return {
-        "status": "ok",
-        "model": model_short_sha(),  # e.g., "cxr-demo@Production" or "local:<file>"
+        "service": "medical-cv-serve-baseline",
         "build_rev": BUILD_REV,
+        "model_alias": MODEL_ALIAS,
+        "model_short_sha": model_short_sha(),
     }
 
-@app.get("/version")
-def version():
-    return {"model": model_short_sha(), "build_rev": BUILD_REV}
+
+@app.get("/health")
+def health():
+    # Basic liveness endpoint
+    return {"status": "ok", "model_loaded": model_short_sha() is not None}
+
 
 @app.get("/model-info")
 def model_info():
     return {
-        "alias": os.getenv("MLFLOW_MODEL_ALIAS", "unknown"),
+        "alias": MODEL_ALIAS,
         "model_short_sha": model_short_sha(),
+        "build_rev": BUILD_REV,
     }
+
 
 @app.post("/predict")
 def predict(req: PredictRequest):
+    """
+    Batch prediction endpoint.
+
+    Also recording inference latency in the INFERENCE_LATENCY_SECONDS
+    histogram, tagged by model_alias to compare Production vs Candidate.
+    """
     try:
+        # Convert list of Features → 2D list of floats
         X = [[it.f1, it.f2, it.f3, it.f4] for it in req.items]
-        y = predict_batch(X)  # model is cached inside model_io
+
+        # Measure model inference latency
+        with INFERENCE_LATENCY_SECONDS.labels(model_alias=MODEL_ALIAS).time():
+            y = predict_batch(X)  # model_io handles caching / loading
+
         # Cast to plain floats for JSON
         return {"predictions": [float(v) for v in y]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/reload")
 def reload_model():
-    # Pull the newest model from the registry (e.g., after promoting a version)
+    """
+    Manually trigger a reload from the MLflow registry
+    (e.g. after promoting a new version / alias in MLflow).
+    """
     load_model()
     return {"reloaded": True, "model": model_short_sha()}
+
+
+# Expose /metrics for Prometheus scraping (Step 3)
+@app.get("/metrics")
+async def metrics():
+    return await metrics_endpoint()()
