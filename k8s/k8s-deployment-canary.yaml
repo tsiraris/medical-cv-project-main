@@ -30,32 +30,20 @@ spec:
           ports:
             - containerPort: 8000
           env:
-            # Same tracking / MinIO config you use for the main deployment.
-            # COPY these from your existing deployment once you re-add them.
             - name: MLFLOW_TRACKING_URI
-              value: "http://mlflow:5000"
+              value: "http://host.docker.internal:5500"
             - name: MLFLOW_REGISTERED_MODEL_NAME
               value: "cxr-demo"
-
-            # 👇 This is the key difference: point at the Candidate alias
             - name: MLFLOW_MODEL_ALIAS
               value: "Candidate"
-
-            # S3/MinIO creds – keep in a Secret in real life
             - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-minio-credentials
-                  key: AWS_ACCESS_KEY_ID
+              value: "minio"
             - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: mlflow-minio-credentials
-                  key: AWS_SECRET_ACCESS_KEY
+              value: "minio123"
             - name: AWS_DEFAULT_REGION
               value: "us-east-1"
             - name: MLFLOW_S3_ENDPOINT_URL
-              value: "http://minio.ml.svc.cluster.local:9000"
+              value: "http://host.docker.internal:9000"
           resources:
             limits:
               cpu: "500m"

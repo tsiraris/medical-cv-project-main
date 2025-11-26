@@ -11,17 +11,12 @@ from app.metrics import (
 from app.model_io import load_model, predict_batch, model_short_sha
 
 # Build / deployment metadata
-BUILD_REV = os.getenv("BUILD_REV", "local")
+BUILD_REV = os.getenv("BUILD_REV", "dev")
 MODEL_ALIAS = os.getenv("MLFLOW_MODEL_ALIAS", "unknown")
 
+app = FastAPI(title="medical-cv-serve")
 
-# ------------------------------------------------------------------------------
-# FastAPI app
-# ------------------------------------------------------------------------------
-
-app = FastAPI(title="medical-cv-serve-baseline", version="0.0.1")
-
-# Wrap the app with the Prometheus metrics middleware
+# Install metrics middleware
 app.middleware("http")(metrics_middleware(app))
 
 
@@ -57,7 +52,7 @@ def root():
 @app.get("/health")
 def health():
     # Basic liveness endpoint
-    return {"status": "ok", "model_loaded": model_short_sha() is not None}
+    return {"status": "ok", "model_loaded": model_short_sha() != "unloaded"}
 
 
 @app.get("/model-info")
@@ -73,9 +68,7 @@ def model_info():
 def predict(req: PredictRequest):
     """
     Batch prediction endpoint.
-
-    Also recording inference latency in the INFERENCE_LATENCY_SECONDS
-    histogram, tagged by model_alias to compare Production vs Candidate.
+    We record inference latency in INFERENCE_LATENCY_SECONDS, tagged by model_alias.
     """
     try:
         # Convert list of Features → 2D list of floats
@@ -83,7 +76,7 @@ def predict(req: PredictRequest):
 
         # Measure model inference latency
         with INFERENCE_LATENCY_SECONDS.labels(model_alias=MODEL_ALIAS).time():
-            y = predict_batch(X)  # model_io handles caching / loading
+            y = predict_batch(X)
 
         # Cast to plain floats for JSON
         return {"predictions": [float(v) for v in y]}
@@ -101,7 +94,7 @@ def reload_model():
     return {"reloaded": True, "model": model_short_sha()}
 
 
-# Expose /metrics for Prometheus scraping (Step 3)
+# Expose /metrics for Prometheus scraping
 @app.get("/metrics")
 async def metrics():
     return await metrics_endpoint()()

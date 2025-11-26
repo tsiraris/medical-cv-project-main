@@ -26,11 +26,19 @@ spec:
             - containerPort: 8000
           env:
             - name: MLFLOW_TRACKING_URI
-              value: "http://mlflow:5000"
+              value: "http://host.docker.internal:5500"
             - name: MLFLOW_REGISTERED_MODEL_NAME
               value: "cxr-demo"
             - name: MLFLOW_MODEL_ALIAS
-              value: "Production"  
+              value: "Production"
+            - name: AWS_ACCESS_KEY_ID
+              value: "minio"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "minio123"
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: "http://host.docker.internal:9000"
           resources:
             limits:
               cpu: "500m"
