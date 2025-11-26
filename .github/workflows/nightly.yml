@@ -35,8 +35,8 @@ jobs:
           print(f"promote={'true' if float(m.get('f1',0))>=0.80 else 'false'}")
           PY
 
-      - name: Register to remote MLflow & set alias
-        if: steps.gate.outputs.promote == 'true'
+      - name: Register & maybe promote new candidate
+        if: steps.gate.outputs.decision == 'promote'
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
           MLFLOW_S3_ENDPOINT_URL: ${{ secrets.MLFLOW_S3_ENDPOINT_URL }}
@@ -52,6 +52,25 @@ jobs:
           os.environ["RUN_ID"]=ri["run_id"]
           PY
           python ci/register_and_promote.py
+
+      # >>> ADD THIS BLOCK <<<
+      - name: Generate model card (nightly)
+        if: steps.gate.outputs.decision == 'promote'
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_REGISTERED_MODEL_NAME: cxr-demo
+        run: |
+          set -euo pipefail
+          echo "Generating model card for nightly promoted model..."
+          python scripts/model_card.py
+
+      - name: Upload model card (nightly)
+        if: steps.gate.outputs.decision == 'promote'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-model-card
+          path: model_cards/
+      # <<< END NEW BLOCK <<<
 
       - name: Upload metrics & model (debug)
         uses: actions/upload-artifact@v4
