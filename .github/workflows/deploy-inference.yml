@@ -1,0 +1,84 @@
+name: deploy-inference
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag to deploy (e.g. latest or a SHA)"
+        required: true
+        default: "latest"
+      mlflow_alias:
+        description: "MLflow alias to load in prod (e.g. Production)"
+        required: true
+        default: "Production"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        run: |
+          curl -L https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl -o kubectl
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Configure kubeconfig
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          if [ -z "$KUBE_CONFIG_DATA" ]; then
+            echo "KUBE_CONFIG_DATA secret is not set"; exit 1
+          fi
+          echo "$KUBE_CONFIG_DATA" | base64 -d > $HOME/.kube-config
+          export KUBECONFIG=$HOME/.kube-config
+          kubectl config get-contexts
+
+      - name: Update images (prod + canary)
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          echo "Using tag: $IMAGE_TAG"
+          KCFG=$HOME/.kube-config
+
+          export KUBECONFIG=$KCFG
+
+          # Prod deployment
+          kubectl set image deploy/medical-cv-serve \
+            medical-cv-serve=ghcr.io/yevgeny07/medical-cv-project:${IMAGE_TAG} \
+            -n ml
+
+          # Canary deployment
+          kubectl set image deploy/medical-cv-serve-canary \
+            medical-cv-serve-canary=ghcr.io/yevgeny07/medical-cv-project:${IMAGE_TAG} \
+            -n ml
+
+          kubectl rollout status deploy/medical-cv-serve -n ml --timeout=120s
+          kubectl rollout status deploy/medical-cv-serve-canary -n ml --timeout=120s
+
+      - name: (Optional) Update prod alias env
+        env:
+          KCFG: ${{ runner.temp }}/kubeconfig
+          MLFLOW_ALIAS: ${{ github.event.inputs.mlflow_alias }}
+        run: |
+          set -euo pipefail
+          export KUBECONFIG=$HOME/.kube-config
+          echo "Updating MLFLOW_MODEL_ALIAS in prod deployment to ${MLFLOW_ALIAS}"
+          kubectl set env deploy/medical-cv-serve \
+            MLFLOW_MODEL_ALIAS=${MLFLOW_ALIAS} \
+            -n ml
+          kubectl rollout status deploy/medical-cv-serve -n ml --timeout=120s
+
+      - name: Smoke test via ingress
+        env:
+          INFERENCE_BASE_URL: ${{ secrets.INFERENCE_BASE_URL }}
+        run: |
+          set -euo pipefail
+          echo "Running smoke_canary against ${INFERENCE_BASE_URL:-'<<set INFERENCE_BASE_URL secret>>'}"
+          pip install requests
+          python scripts/smoke_canary.py
