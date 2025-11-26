@@ -87,9 +87,8 @@ services:
     image: python:3.11-slim
     working_dir: /app
     volumes:
-      - ..:/app            # mount repo root (adjust if needed)
+      - ..:/app            # mount repo root
     environment:
-      # Talk to MLflow/MinIO inside Docker network
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minio
@@ -101,11 +100,11 @@ services:
     command: >
       sh -c "
       pip install --no-cache-dir --upgrade pip &&
-      pip install --no-cache-dir uvicorn fastapi pydantic 'mlflow==2.18.0' boto3 gunicorn &&
+      pip install --no-cache-dir -e . &&
       gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 --timeout 60
       "
     ports:
-      - "8000:8000"       # localhost:8000 -> API
+      - "8000:8000"
     depends_on:
       mlflow:
         condition: service_started

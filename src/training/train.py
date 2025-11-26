@@ -23,9 +23,9 @@ except Exception:
     HAVE_SKL2ONNX = False
 
 import mlflow
-import mlflow.sklearn
 from mlflow.models.signature import infer_signature
 from mlflow.exceptions import MlflowException
+from mlflow.tracking import MlflowClient
 
 from src.utils.io import ensure_dir, save_json
 from src.utils.mlflow_ready import wait_for_mlflow
@@ -43,39 +43,56 @@ def _is_http_uri(uri: str) -> bool:
         return uri.startswith("http://") or uri.startswith("https://")
 
 
-def log_model_compat(sk_model, artifact_path: str, signature=None, input_example=None, registered_model_name: str | None = None) -> str:
+def log_model_properly(model, run_id, reg_name, signature=None, input_example=None):
     """
-    Try modern mlflow.sklearn.log_model(). If the server doesn't support the
-    'logged-models' API (404), fall back to uploading models/model.joblib as a plain artifact.
+    Log the sklearn model as a plain artifact and register it in the
+    MLflow Model Registry using the low-level MlflowClient APIs.
+
+    This avoids the newer /api/2.0/mlflow/logged-models endpoints
+    that your tracking server doesn't implement.
     """
-    import mlflow.sklearn as mls
+    artifact_subdir = "model"  # folder inside the run's artifacts
+
+    # Ensure there is a local .joblib file to upload
+    local_model_path = Path("models") / "model.joblib"
+    if not local_model_path.exists():
+        local_model_path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(model, local_model_path)
+
+    # 1) Log the file as a plain artifact into this run under artifacts/model
+    mlflow.log_artifact(str(local_model_path), artifact_path=artifact_subdir)
+
+    # 2) Compute the artifact URI that points at this folder
+    #    e.g. s3://mlflow/<exp>/<run>/artifacts/model
+    source = mlflow.get_artifact_uri(artifact_subdir)
+
+    client = MlflowClient()
+
+    # 3) Ensure the registered model exists
     try:
-        if registered_model_name:
-            mls.log_model(
-                sk_model=sk_model,
-                artifact_path=artifact_path,
-                registered_model_name=registered_model_name,
-                signature=signature,
-                input_example=input_example,
-            )
-        else:
-            mls.log_model(
-                sk_model=sk_model,
-                artifact_path=artifact_path,
-                signature=signature,
-                input_example=input_example,
-            )
-        return "mlflow.sklearn.log_model"
+        client.create_registered_model(reg_name)
+        print(f"[train] Created registered model '{reg_name}'")
     except MlflowException as e:
-        msg = str(e).lower()
-        if "logged-models" in msg or "404" in msg or "not found" in msg:
-            local_model_path = Path("models") / "model.joblib"
-            if not local_model_path.exists():
-                local_model_path.parent.mkdir(parents=True, exist_ok=True)
-                joblib.dump(sk_model, local_model_path)
-            mlflow.log_artifact(str(local_model_path), artifact_path=artifact_path)
-            return "artifact-fallback"
-        raise
+        if "RESOURCE_ALREADY_EXISTS" in str(e):
+            print(f"[train] Registered model '{reg_name}' already exists")
+        else:
+            print(f"[train] Warning: could not create registered model '{reg_name}': {e}")
+
+    # 4) Create a new model version pointing at this run's artifacts
+    try:
+        mv = client.create_model_version(
+            name=reg_name,
+            source=source,
+            run_id=run_id,
+        )
+        print(
+            f"[train] Created model version {mv.version} "
+            f"for registered model '{reg_name}'"
+        )
+        return "client.create_model_version"
+    except MlflowException as e:
+        print(f"[train] Warning: could not create model version for '{reg_name}': {e}")
+        return "artifact-only"
 
 
 if __name__ == "__main__":
@@ -131,7 +148,7 @@ if __name__ == "__main__":
         joblib.dump(clf, outp)
         print(f"[train] Saved model to: {outp.resolve()}")
 
-        # Log model to MLflow (with compat)
+        # Log model + register in MLflow (if we have a registry name)
         signature = infer_signature(Xtr, clf.predict(Xtr))
         input_example = Xtr[:2]
 
@@ -139,14 +156,19 @@ if __name__ == "__main__":
         if _is_http_uri(tracking_uri):
             reg_name = os.getenv("MLFLOW_REGISTERED_MODEL_NAME")  # optional
 
-        how = log_model_compat(
-            sk_model=clf,
-            artifact_path="model",
-            signature=signature,
-            input_example=input_example,
-            registered_model_name=reg_name,
-        )
-        print(f"[train] model logged via: {how}")
+        if reg_name:
+            how = log_model_properly(
+                clf,
+                run.info.run_id,
+                reg_name=reg_name,
+                signature=signature,
+                input_example=input_example,
+            )
+            print(f"[train] model logged via: {how}")
+        else:
+            # Still log the artifact for completeness even if we don't have a registry name
+            mlflow.log_artifact(str(outp), artifact_path="model")
+            print("[train] model logged as artifact only (no registry name set)")
 
         # ------------------------------------------------------------------
         # Optional: export ONNX model for KServe and tag storage URI

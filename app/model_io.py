@@ -2,8 +2,9 @@
 import os
 import tempfile
 from pathlib import Path
-import joblib
+from typing import Optional
 
+import joblib
 import mlflow
 from mlflow.tracking import MlflowClient
 from mlflow.artifacts import download_artifacts
@@ -15,65 +16,84 @@ DEFAULT_ALIAS = os.getenv("MLFLOW_MODEL_ALIAS", "Production")
 _model_cache = {"path": None, "obj": None, "version": None}
 
 
-def _tracking_setup():
-    uri = os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns")
-    mlflow.set_tracking_uri(uri)
-
-
-def _download_by_alias(model_name: str, alias: str) -> Path:
+def _get_tracking_client() -> MlflowClient:
     """
-    Try to resolve <model_name>@<alias> to a model version, download model/model.joblib.
-    Fallback: latest numeric version if alias isn't set.
+    Return an MlflowClient bound to the configured tracking URI.
     """
-    _tracking_setup()
-    client = MlflowClient()
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+    return MlflowClient()
 
-    mv = None
-    # 1) Preferred: alias
+
+def _resolve_model_version_by_alias(
+    client: MlflowClient, model_name: str, alias: str
+) -> Optional[str]:
+    """
+    Given a model name and alias, return the underlying version number (as string),
+    or None if not found.
+    """
     try:
-        mv = client.get_model_version_by_alias(name=model_name, alias=alias)
+        mv = client.get_model_version_by_alias(model_name, alias)
+        return mv.version
     except Exception:
-        mv = None
-
-    # 2) Fallback: newest by version number
-    if mv is None:
-        all_vs = client.search_model_versions(f"name='{model_name}'")
-        if not all_vs:
-            raise RuntimeError(f"No versions of '{model_name}' exist in the registry")
-        mv = sorted(all_vs, key=lambda v: int(v.version))[-1]
-
-    tmpdir = Path(tempfile.mkdtemp(prefix=f"{model_name}-v{mv.version}-"))
-    # Try exact file first
-    try:
-        p = download_artifacts(
-            run_id=mv.run_id,
-            artifact_path="model/model.joblib",
-            dst_path=str(tmpdir),
-        )
-        return Path(p)
-    except Exception:
-        # Fallback: download whole model dir, then find a .joblib
-        p = download_artifacts(
-            run_id=mv.run_id,
-            artifact_path="model",
-            dst_path=str(tmpdir),
-        )
-        joblibs = list(Path(p).rglob("*.joblib"))
-        if not joblibs:
-            raise RuntimeError("Downloaded model dir has no .joblib")
-        return joblibs[0]
+        return None
 
 
 def load_model():
-    """Load (and cache) the current model pointed to by alias (default: Production)."""
+    """
+    Load model from MLflow Model Registry and cache it in-process.
+
+    Uses:
+    - MLFLOW_TRACKING_URI
+    - MLFLOW_REGISTERED_MODEL_NAME (e.g. "cxr-demo")
+    - MLFLOW_MODEL_ALIAS (e.g. "Production" / "Candidate")
+    """
     global _model_cache
-    model_name = os.getenv(MODEL_NAME_ENV, "cxr-demo")
-    joblib_path = _download_by_alias(model_name, DEFAULT_ALIAS)
-    obj = joblib.load(joblib_path)
-    _model_cache.update(
-        {"path": str(joblib_path), "obj": obj, "version": f"{model_name}@{DEFAULT_ALIAS}"}
-    )
-    return obj
+
+    model_name = os.getenv(MODEL_NAME_ENV)
+    if not model_name:
+        raise RuntimeError(
+            f"{MODEL_NAME_ENV} env var is not set; cannot load model from MLflow."
+        )
+
+    alias = os.getenv("MLFLOW_MODEL_ALIAS", DEFAULT_ALIAS)
+    client = _get_tracking_client()
+
+    version = _resolve_model_version_by_alias(client, model_name, alias)
+    if version is None:
+        raise RuntimeError(
+            f"Could not find alias '{alias}' for model '{model_name}' "
+            "in the MLflow Model Registry."
+        )
+
+    # MLflow model URI for that alias
+    model_uri = f"models:/{model_name}@{alias}"
+
+    # Download to a temp dir, then look for a joblib file (your training code
+    # saves a sklearn model as joblib in the MLflow artifact). :contentReference[oaicite:3]{index=3}
+    tmp_dir = tempfile.mkdtemp(prefix="mlflow_model_")
+    download_artifacts(artifact_uri=model_uri, dst_path=tmp_dir)
+
+    # Find a .joblib file in that directory
+    joblib_path = None
+    for p in Path(tmp_dir).rglob("*.joblib"):
+        joblib_path = p
+        break
+
+    if joblib_path is None:
+        raise RuntimeError(
+            f"No .joblib file found in MLflow model artifacts for {model_uri}"
+        )
+
+    model_obj = joblib.load(joblib_path)
+
+    _model_cache = {
+        "path": str(joblib_path),
+        "obj": model_obj,
+        "version": f"{model_name}@{alias}",
+    }
+    return model_obj
 
 
 def predict_batch(X):
