@@ -26,5 +26,10 @@ medical_cv_serve.egg-info/
 tmp_artifacts/ 
 tmp_artifacts/
 
+# Word files
+*.doc
+*.docx
+~$*.doc*  # (Optional: catches temporary hidden Word files that start with ~$)
+
 # Repomix files
-*.xml
+*repomix*.*
