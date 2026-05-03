@@ -87,7 +87,7 @@ A key feature of this repository is the automated intelligence built into the `.
 2.  **Quality Gate (`ci/quality_gate.py`):** The CI runner parses `metrics/val.json`. If the model falls below the minimum F1/Accuracy thresholds, the build fails.
 3.  **Registration (`ci/register_and_promote.py`):** If the gate passes, the model is registered in MLflow. The script compares the new `Candidate` against the current `Production` model. If it performs better, it automatically promotes the alias, triggering the CD pipeline to update K8s.
 
-## 🗺️ Roadmap (Sprint 2)
+## 🗺️ Roadmap (Next Sprint)
 
 *   **Remote Backend Integration:** Migrate MLflow backend from local SQLite to PostgreSQL and remote S3 storage.
 *   **Computer Vision Integration:** Replace the placeholder tabular dataset with actual medical imaging data (PyTorch/Torchvision integration).
