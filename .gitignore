@@ -25,3 +25,6 @@ medical_cv_serve.egg-info/
 
 tmp_artifacts/ 
 tmp_artifacts/
+
+# Repomix files
+*.xml
