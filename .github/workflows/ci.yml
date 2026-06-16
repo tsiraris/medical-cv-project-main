@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install "mlflow==2.18.0" psycopg2-binary boto3 requests
-          pip install dvc  # file backend is enough in CI
+          pip install dvc "pathspec<0.12"   # dvc 3.51.2 needs _DIR_MARK, dropped in pathspec 0.12
           if [[ -f requirements.txt ]]; then
             pip install -r requirements.txt
           fi

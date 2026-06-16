@@ -9,3 +9,4 @@ pyyaml
 joblib
 skl2onnx
 onnxruntime
+pathspec<0.12

@@ -40,13 +40,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+# Pushing to the repo owner's namespace so GITHUB_TOKEN has push rights.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/medical-cv-project:latest                # Use the repository owner so the GITHUB_TOKEN (scoped to this repo's owner) ...
-            ghcr.io/${{ github.repository_owner }}/medical-cv-project:${{ github.sha }}     # ... actually has push rights. Hardcoding a foreign namespace causes a 403.
+            ghcr.io/${{ github.repository_owner }}/medical-cv-project:latest
+            ghcr.io/${{ github.repository_owner }}/medical-cv-project:${{ github.sha }}
           build-args: |
             BUILD_REV=${{ github.sha }}
