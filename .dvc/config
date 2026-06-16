@@ -4,5 +4,5 @@
     url = s3://mlflow/dvc
     endpointurl = http://localhost:9000
     access_key_id = minio
-    secret_access_key = minio123
+    secret_access_key = minio123    # Note: Local dev credentials only (safe to commit). Not a production secret.
     use_ssl = false

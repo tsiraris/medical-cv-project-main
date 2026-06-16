@@ -1,98 +1,119 @@
-# 🩺 Medical Computer Vision: End-to-End MLOps Pipeline
+# 🩺 Medical-CV: An End-to-End MLOps / CI-CD Harness
 
 ![Python](https://img.shields.io/badge/python-3.11-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Serving-009688)
 ![MLflow](https://img.shields.io/badge/MLflow-Registry-0194E2)
 ![DVC](https://img.shields.io/badge/DVC-Versioning-945DD6)
-![Kubernetes](https://img.shields.io/badge/Kubernetes-Deployment-326CE5)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-Canary-326CE5)
+![CI](https://img.shields.io/badge/GitHub_Actions-CI%2FCD-2088FF)
 
-## 📌 Project Overview
+A self-built, **production-grade MLOps pipeline** that takes a model from versioned data all the way to a **monitored, autoscaling, canary-deployed REST service** — and automates the whole lifecycle in GitHub Actions. It is intentionally **model-agnostic**: the serving, versioning, promotion, and rollout machinery is the deliverable, and the model plugged into it is a swappable placeholder.
 
-This repository implements a complete, production-grade **MLOps workflow** designed for a medical computer vision use case. While the current iteration utilizes a placeholder dataset to validate the CI/CD pathways, the underlying architecture provides a robust, scalable foundation for continuous training, automated evaluation, and safe deployment of machine learning models.
+---
 
-The goal of this project is to demonstrate best practices in **reproducibility, automated quality gating, and Kubernetes-based serving**.
+## ⚠️ What this project is — and what it is *not*
+
+**It IS** a complete, working operationalization harness: data + pipeline versioning (DVC), experiment tracking and a Model Registry with staged promotion (MLflow), containerized serving with Prometheus observability (FastAPI), Kubernetes deployment with autoscaling and a canary rollout, and four CI/CD workflows including a nightly retrain-and-gate job.
+
+**It does NOT claim to be:**
+- **A medical-imaging model.** The model currently wired through the pipeline is a scikit-learn **`LogisticRegression` on four tabular features** (`f1–f4`, derived from the bundled Iris dataset). The registered name `cxr-demo` ("chest X-ray demo") is a **placeholder**. "Medical CV" describes the *target domain the harness is designed for*, not an imaging model it ships.
+- **A cloud production deployment.** It runs on a **local single-node cluster** (Docker Desktop / Minikube Kubernetes), not a managed GKE/EKS cluster serving live traffic. The `deploy-inference.yml` workflow is wired for a real cluster (via a kubeconfig secret) but is a manual, not-yet-exercised-at-scale path.
+- **A clinically validated system.** The `mlops/gates.yaml` clinical bars (AUC ≥ 0.90, sensitivity/specificity ≥ 0.85) are **design intent**, staged for when a real imaging model lands — they are not yet enforced.
+
+Being upfront about the placeholder is deliberate: the value here is the **infrastructure**, which is genuinely solid.
+
+---
 
 ## 🏗️ Architecture & Tech Stack
 
-This project maps the entire ML lifecycle using industry-standard tooling:
+| Layer | Tooling | Role |
+|-------|---------|------|
+| **Data & pipeline versioning** | DVC | Reproducible `preprocess → train → eval` DAG; dataset/artifact versioning to MinIO/S3 |
+| **Experiment tracking & registry** | MLflow (Postgres + MinIO) | Logs params/metrics/artifacts; Model Registry with `Candidate` / `Production` aliases |
+| **Serving** | FastAPI + Prometheus | REST API (`/health`, `/model-info`, `/predict`, `/reload`, `/metrics`); per-alias latency & request metrics |
+| **Orchestration** | Kubernetes + NGINX Ingress | HPA autoscaling (CPU 60%, 1–5 replicas); dual-deployment **10% canary** |
+| **Automation** | GitHub Actions | CI, image build/push to GHCR, manual deploy, nightly retrain |
+| **Local stack** | Docker Compose | One-command Postgres + MinIO + MLflow + app |
 
-*   **Data & Pipeline Versioning (DVC):** Tracks data provenance and orchestrates a reproducible DAG (`preprocess` → `train` → `eval`).
-*   **Experiment Tracking & Registry (MLflow):** Logs hyperparameters, performance metrics (Accuracy, F1), and artifacts. Manages model lifecycle states (e.g., automatically tagging models as `Candidate` or `Production`).
-*   **Model Serving (FastAPI):** Exposes a high-performance REST API for batch predictions, instrumented with **Prometheus** to track HTTP and inference latency.
-*   **Continuous Integration & Deployment (GitHub Actions):** 
-    *   Automated model retraining pipelines with strict quality gates (`f1 >= 0.80`).
-    *   Docker image builds pushed to GitHub Container Registry (GHCR).
-    *   Nightly cron jobs for automated retraining and model card generation.
-*   **Orchestration (Kubernetes):** Production deployment manifests including Horizontal Pod Autoscalers (HPA) and NGINX Ingress rules for **Canary Deployments** (10% traffic routing).
+---
 
 ## 📁 Repository Structure
 
 ```text
 .
-├── app/                  # FastAPI serving logic and Prometheus metrics middleware
-├── ci/                   # CI scripts (quality gating, MLflow registry promotion)
-├── k8s/                  # Kubernetes manifests (Deployments, Services, HPA, Ingress)
-├── mlops/                # Docker Compose files for local MLflow/MinIO tracking stack
-├── scripts/              # Utility scripts (load testing, smoke tests, model cards)
-├── src/                  # Core ML pipeline (data preprocessing, training, evaluation)
-├── dvc.yaml              # DVC pipeline definition
-├── .github/workflows/    # CI/CD and automation pipelines
-└── Makefile              # Command shortcuts for local development
+├── app/                  # FastAPI serving + Prometheus metrics middleware
+├── ci/                   # quality_gate.py (F1/acc gate) + register_and_promote.py (registry/aliases)
+├── k8s/                  # namespace, deployment, service, HPA, ingress (+ canary variants)
+├── mlops/                # docker-compose (MLflow/Postgres/MinIO) + gates.yaml (future clinical bars)
+├── scripts/              # smoke test, load test, model-card generator, placeholder trainer
+├── src/                  # ML pipeline: data/, training/, and utils/ (incl. wait_for_mlflow guard)
+├── .github/workflows/    # ci.yml, cd-docker.yml, deploy-inference.yml, nightly.yml
+├── dvc.yaml / params.yaml# pipeline graph + single source of truth for hyperparameters
+└── Makefile              # local workflow shortcuts
 ```
+
+---
+
+## 🔄 The Lifecycle (how it actually behaves)
+
+1. **Push to `main`** triggers `ci.yml`: it stands up a Postgres service + a local MLflow server, runs `dvc repro`, then registers a new model version, **always** sets the `Candidate` alias, and conditionally moves `Production`.
+2. **Promotion is a no-regression rule.** In CI, `register_and_promote.py` runs with `PROMOTE_F1_THRESHOLD=0.0`, so it promotes to `Production` only if the new F1 is **not worse** than the current `Production` version — not an absolute bar. Provenance (Git SHA, branch, PR number, run id) is stamped onto every version as tags.
+3. **Quality gate (`ci/quality_gate.py`, F1/acc ≥ 0.80)** is enforced **locally** via `make gate` / `make ci-local`, and is re-used by the **nightly** job. It is *not* a step inside `ci.yml`.
+4. **`cd-docker.yml`** builds and pushes the image to `ghcr.io/<owner>/medical-cv-project` (`latest` + commit SHA).
+5. **`deploy-inference.yml`** (manual) does a `kubectl set image` rollout on prod + canary and runs a smoke test.
+6. **`nightly.yml`** (cron) retrains on a file backend, runs the quality gate, and uploads a model card + artifacts.
+
+---
 
 ## 🚀 Quickstart
 
-### 1. Local Development (Pipeline Simulation)
-
-You can run the entire ML pipeline and serving infrastructure locally.
-
+### Local pipeline + serving
 ```bash
-# 1. Install dependencies
+# 1. Install
 pip install -e .
 pip install -r requirements.txt
 
-# 2. Start the local MLflow tracking server (requires Docker)
-make mlflow-up
+# 2. Start the MLflow + Postgres + MinIO stack (Docker)
+make mlflow-up           # MLflow UI at http://localhost:5500
 
-# 3. Run the DVC pipeline (Preprocess -> Train -> Evaluate)
+# 3. Run the DVC pipeline (preprocess → train → eval)
 make dvc-repro
 
-# 4. Check the quality gate (simulates CI pipeline checks)
+# 4. Enforce the quality gate (F1/acc >= 0.80)
 make gate
 
-# 5. Run the FastAPI server locally
-make app-run
+# 5. Serve locally
+make app-run             # http://localhost:8000/docs
 ```
 
-### 2. Kubernetes Deployment (Minikube / Cluster)
-
-The application is designed to be deployed to a Kubernetes `ml` namespace with Canary support.
+### Kubernetes (local cluster)
 ```bash
-# Apply the namespace, deployments, services, and HPA
-make k8s-apply
-
-# Port forward to test locally
+make k8s-apply           # namespace, deployment, service, HPA
 kubectl -n ml port-forward svc/medical-cv-serve 8080:80
 
-# Check health and predict
 curl -s localhost:8080/health | jq
-curl -s -X POST localhost:8080/predict -H 'Content-Type: application/json' -d '{"items":[{"f1":5.1,"f2":3.5,"f3":1.4,"f4":0.2}]}' | jq
+curl -s -X POST localhost:8080/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"f1":5.1,"f2":3.5,"f3":1.4,"f4":0.2}]}' | jq
 ```
-
-## 🧠 Continuous Integration (CI) Logic
-
-A key feature of this repository is the automated intelligence built into the `.github/workflows/`. When code or data changes are pushed:
-
-1.  **DVC Repro:** The pipeline is executed, caching intermediate steps if unchanged.
-2.  **Quality Gate (`ci/quality_gate.py`):** The CI runner parses `metrics/val.json`. If the model falls below the minimum F1/Accuracy thresholds, the build fails.
-3.  **Registration (`ci/register_and_promote.py`):** If the gate passes, the model is registered in MLflow. The script compares the new `Candidate` against the current `Production` model. If it performs better, it automatically promotes the alias, triggering the CD pipeline to update K8s.
-
-## 🗺️ Roadmap (Next Sprint)
-
-*   **Remote Backend Integration:** Migrate MLflow backend from local SQLite to PostgreSQL and remote S3 storage.
-*   **Computer Vision Integration:** Replace the placeholder tabular dataset with actual medical imaging data (PyTorch/Torchvision integration).
-*   **Notifications:** Implement Slack/PR automated comments detailing model promotion status and metrics.
 
 ---
-*Feel free to open an issue or reach out if you have questions about the architecture!*
-```
+
+## 🐛 Engineering decisions & failures fixed
+
+- **CI race condition** against a not-yet-ready MLflow server → added `psycopg2-binary`, a `curl` polling loop, *and* an in-code `wait_for_mlflow()` readiness guard.
+- **Registry "ghost-model" bug** (artifacts logged but never registered) → switched to low-level `MlflowClient.create_registered_model` + `create_model_version`, avoiding tracking-server endpoints that aren't implemented.
+- **Heredoc-in-YAML collapse** → refactored inline Python into committed, version-controlled scripts.
+- **KServe → vanilla-K8s pivot** when the cluster lacked Knative/KServe CRDs → achieved canary rollout with native Deployments + NGINX-Ingress `canary-weight`.
+
+---
+
+## 🗺️ Roadmap
+
+- **Swap in a real imaging model** (PyTorch/Torchvision) behind the same harness; enforce the `gates.yaml` clinical bars (AUC/sensitivity/specificity).
+- **Self-hosted runner** so the nightly job can register/promote against the DB-backed MLflow (cloud runners can't reach a localhost server).
+- **PR/Slack notifications** summarizing promotion status and metric deltas.
+
+---
+
+*Questions about the architecture are welcome — open an issue.*

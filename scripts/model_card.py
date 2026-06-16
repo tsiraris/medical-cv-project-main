@@ -23,7 +23,7 @@ def _load_run_id() -> str:
     if run_id:
         return run_id
 
-    # Fallback: metrics/run_info.json (pattern used in your CI)
+    # Fallback: metrics/run_info.json (pattern used in the CI pipeline)
     info_path = Path("metrics/run_info.json")
     if info_path.exists():
         data = json.loads(info_path.read_text())

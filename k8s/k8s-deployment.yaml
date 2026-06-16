@@ -20,7 +20,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: medical-cv-serve
-          image: ghcr.io/yevgeny07/medical-cv-project:latest
+          image: ghcr.io/tsiraris/medical-cv-project:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

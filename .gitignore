@@ -19,6 +19,7 @@ __pycache__/
 mlruns/
 .minio/
 medical_cv_serve.egg-info/
+*.egg-info/
 
 # Allow metrics JSON
 !metrics/val.json

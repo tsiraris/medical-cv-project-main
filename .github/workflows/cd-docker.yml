@@ -46,7 +46,7 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/yevgeny07/medical-cv-project:latest
-            ghcr.io/yevgeny07/medical-cv-project:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/medical-cv-project:latest                # Use the repository owner so the GITHUB_TOKEN (scoped to this repo's owner) ...
+            ghcr.io/${{ github.repository_owner }}/medical-cv-project:${{ github.sha }}     # ... actually has push rights. Hardcoding a foreign namespace causes a 403.
           build-args: |
             BUILD_REV=${{ github.sha }}

@@ -70,8 +70,8 @@ def load_model():
     # MLflow model URI for that alias
     model_uri = f"models:/{model_name}@{alias}"
 
-    # Download to a temp dir, then look for a joblib file (your training code
-    # saves a sklearn model as joblib in the MLflow artifact). :contentReference[oaicite:3]{index=3}
+    # Download to a temp dir, then look for a joblib file (the training code
+    # saves a sklearn model as joblib in the MLflow artifact). 
     tmp_dir = tempfile.mkdtemp(prefix="mlflow_model_")
     download_artifacts(artifact_uri=model_uri, dst_path=tmp_dir)
 

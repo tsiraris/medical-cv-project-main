@@ -15,7 +15,7 @@ spec:
     metadata:
       labels:
         app: medical-cv-serve-canary
-      # (Optional) Prometheus scraping – we’ll wire metrics later
+      # (Optional) Prometheus scraping
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
@@ -25,7 +25,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: medical-cv-serve-canary
-          image: ghcr.io/yevgeny07/medical-cv-project:latest
+          image: ghcr.io/tsiraris/medical-cv-project:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

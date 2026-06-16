@@ -39,23 +39,21 @@ jobs:
 
       - name: Update images (prod + canary)
         env:
-          KUBECONFIG: ${{ runner.temp }}/kubeconfig
           IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           echo "Using tag: $IMAGE_TAG"
-          KCFG=$HOME/.kube-config
-
-          export KUBECONFIG=$KCFG
+          export KUBECONFIG=$HOME/.kube-config
 
           # Prod deployment
           kubectl set image deploy/medical-cv-serve \
-            medical-cv-serve=ghcr.io/yevgeny07/medical-cv-project:${IMAGE_TAG} \
+            medical-cv-serve=ghcr.io/${OWNER}/medical-cv-project:${IMAGE_TAG} \
             -n ml
 
           # Canary deployment
           kubectl set image deploy/medical-cv-serve-canary \
-            medical-cv-serve-canary=ghcr.io/yevgeny07/medical-cv-project:${IMAGE_TAG} \
+            medical-cv-serve-canary=ghcr.io/${OWNER}/medical-cv-project:${IMAGE_TAG} \
             -n ml
 
           kubectl rollout status deploy/medical-cv-serve -n ml --timeout=120s
@@ -63,7 +61,6 @@ jobs:
 
       - name: (Optional) Update prod alias env
         env:
-          KCFG: ${{ runner.temp }}/kubeconfig
           MLFLOW_ALIAS: ${{ github.event.inputs.mlflow_alias }}
         run: |
           set -euo pipefail
